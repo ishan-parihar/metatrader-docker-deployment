@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  mt4-auth:
+    build: .
+    container_name: mt4-auth
+    restart: unless-stopped
+    ports:
+      - "6082:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - AUTH_USER=${AUTH_USER:-admin}
+      - AUTH_PASS=${AUTH_PASS:-changeme}

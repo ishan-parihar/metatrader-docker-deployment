@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MT4 Terminal — Login</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#0a0a0f;color:#e0e0e0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+  .card{background:#12121a;border:1px solid #1e1e2e;border-radius:12px;padding:40px;width:100%;max-width:380px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+  h1{font-size:20px;font-weight:600;text-align:center;margin-bottom:8px;color:#fff}
+  .sub{text-align:center;color:#666;font-size:13px;margin-bottom:28px}
+  label{display:block;font-size:12px;font-weight:500;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+  input{width:100%;padding:10px 12px;background:#0d0d14;border:1px solid #2a2a3a;border-radius:6px;color:#fff;font-size:14px;outline:none;transition:border .2s}
+  input:focus{border-color:#4a6cf7}
+  .field{margin-bottom:16px}
+  button{width:100%;padding:11px;background:#4a6cf7;color:#fff;border:none;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer;transition:background .2s}
+  button:hover{background:#3a5ce5}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .error{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);color:#ef4444;font-size:13px;padding:10px;border-radius:6px;margin-bottom:16px;display:none;text-align:center}
+  .lockout{color:#f59e0b}
+  .brand{text-align:center;margin-bottom:24px}
+  .brand svg{width:36px;height:36px;fill:#4a6cf7}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="brand">
+    <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3V3zm2 2v14h14V5H5zm3 3h8v2H8V8zm0 4h8v2H8v-2z"/></svg>
+  </div>
+  <h1>MT4 Terminal</h1>
+  <p class="sub">Enter credentials to access the trading terminal</p>
+  <div class="error" id="error"></div>
+  <form id="loginForm" onsubmit="return doLogin(event)">
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" name="username" type="text" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit" id="btn">Sign In</button>
+  </form>
+</div>
+<script>
+async function doLogin(e) {
+  e.preventDefault();
+  const btn = document.getElementById('btn');
+  const err = document.getElementById('error');
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+  err.style.display = 'none';
+
+  try {
+    const res = await fetch('/auth', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('username').value,
+        password: document.getElementById('password').value
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      window.location.href = data.redirect || '/vnc.html';
+    } else {
+      err.textContent = data.error || 'Login failed';
+      err.className = res.status === 429 ? 'error lockout' : 'error';
+      err.style.display = 'block';
+    }
+  } catch (ex) {
+    err.textContent = 'Connection error';
+    err.style.display = 'block';
+  }
+  btn.disabled = false;
+  btn.textContent = 'Sign In';
+}
+</script>
+</body>
+</html>
