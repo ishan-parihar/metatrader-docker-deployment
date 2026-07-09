@@ -42,7 +42,7 @@ sleep 1
 
 # ── Step 3: Start x11vnc ───────────────────────────────────────────────────
 echo "[3] Starting x11vnc on :$MT4_VNC_PORT..."
-x11vnc -display "$DISPLAY" -forever -nopw -quiet -bg -rfbport "$MT4_VNC_PORT" 2>/dev/null || true
+x11vnc -display "$DISPLAY" -forever -nopw -quiet -bg -rfbport "$MT4_VNC_PORT" -grabkbd 2>/dev/null || true
 
 # ── Step 4: Start noVNC (web-based VNC client) ─────────────────────────────
 if [ "$MT4_ENABLE_NOVNC" = "1" ]; then
@@ -170,7 +170,9 @@ cat > /tmp/start_mt4.bat <<'BATEOF'
 "C:\Program Files (x86)\MetaTrader 4\terminal.exe" /portable
 BATEOF
 
-wine cmd.exe /c /tmp/start_mt4.bat 2>&1 &
+LAUNCHER="/tmp/start_mt4.bat"
+
+wine cmd.exe /c "$LAUNCHER" 2>&1 &
 MT4_PID=$!
 echo "  PID: $MT4_PID"
 
@@ -209,17 +211,35 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
-# ── Monitor loop (restart MT4 if it crashes) ───────────────────────────────
+# ── Monitor loop (restart MT4 + services if they crash) ───────────────────
 RESTART_COUNT=0
+ensure_x11vnc() {
+    if ! pgrep -x x11vnc >/dev/null 2>&1; then
+        echo "  x11vnc died, restarting..."
+        x11vnc -display "$DISPLAY" -forever -nopw -quiet -bg -rfbport "$MT4_VNC_PORT" -grabkbd 2>/dev/null || true
+        sleep 2
+    fi
+}
+ensure_websockify() {
+    if [ "$MT4_ENABLE_NOVNC" = "1" ] && ! kill -0 $NOVNC_PID 2>/dev/null; then
+        echo "  websockify died, restarting..."
+        websockify --web=/usr/share/novnc/ "$MT4_NOVNC_PORT" localhost:"$MT4_VNC_PORT" &
+        NOVNC_PID=$!
+        sleep 2
+    fi
+}
 while true; do
+    ensure_x11vnc
+    ensure_websockify
     if ! kill -0 $MT4_PID 2>/dev/null; then
         RESTART_COUNT=$((RESTART_COUNT + 1))
         echo "WARNING: MT4 process died. Restarting (#$RESTART_COUNT)..."
+        ensure_x11vnc
         cd "$MT4_DIR"
         wine cmd.exe /c "$LAUNCHER" 2>&1 &
         MT4_PID=$!
         echo "  New PID: $MT4_PID"
         sleep 15
     fi
-    sleep 30
+    sleep 10
 done
