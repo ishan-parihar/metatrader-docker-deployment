@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  mt4-terminal:
+    build: .
+    container_name: mt4-terminal
+    restart: unless-stopped
+    ports:
+      - "6081:6080"   # noVNC web interface (different port from MT5)
+      - "5901:5900"   # VNC (optional)
+    volumes:
+      - ./config:/config
+      # Mount local MQL4 directory directly into the container
+      - ../mql4mt5/MQL4:/config/.wine/drive_c/Program Files (x86)/MetaTrader 4/MQL4
+    env_file:
+      - .env
+    environment:
+      - MT4_BROKER_LOGIN=${MT4_BROKER_LOGIN:-}
+      - MT4_BROKER_PASSWORD=${MT4_BROKER_PASSWORD:-}
+      - MT4_BROKER_SERVER=${MT4_BROKER_SERVER:-MetaQuotes-Demo}
+      - MT4_ENABLE_NOVNC=1
+      - MT4_NOVNC_PORT=6080
+      - MT4_VNC_PORT=5900

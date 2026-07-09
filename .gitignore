@@ -1,0 +1,22 @@
+# Binaries (user-provided)
+MT4/mt4-bin/
+MT5/mt5-bin/
+
+# Environment files (contain credentials)
+MT4/.env
+MT5/.env
+
+# Config volumes
+MT4/config/
+MT5/config/
+
+# Docker volumes
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

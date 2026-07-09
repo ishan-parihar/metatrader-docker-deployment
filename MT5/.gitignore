@@ -1,0 +1,11 @@
+# Environment
+.env
+
+# MT5 binaries (user-provided, not committed)
+mt5-bin/
+
+# EA files (user-provided, not committed)
+ea/
+
+# Docker volumes
+mt5-config/

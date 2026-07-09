@@ -1,0 +1,46 @@
+# Standalone MT5 Terminal with noVNC
+# Usage:
+#   1. Place MT5 binaries in ./mt5-bin/ (terminal64.exe + Config/)
+#   2. Place EA .ex5 files in ../mql4mt5/MQL5/Experts/ (mounted directly)
+#   3. Set environment variables in .env or export them
+#   4. Run: docker compose up -d
+#   5. Open browser: http://localhost:6080
+#
+services:
+  mt5:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mt5-terminal
+    restart: unless-stopped
+    ports:
+      - "6080:6080"   # noVNC web interface (browser access)
+      - "5900:5900"   # VNC (optional, for native VNC clients)
+    volumes:
+      - mt5-config:/config
+      # Mount local MQL5 directory directly into the container
+      - ../mql4mt5/MQL5:/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5
+    environment:
+      - MT5_BROKER_LOGIN=${MT5_BROKER_LOGIN:-}
+      - MT5_BROKER_PASSWORD=${MT5_BROKER_PASSWORD:-}
+      - MT5_BROKER_SERVER=${MT5_BROKER_SERVER:-MetaQuotes-Demo}
+      - MT5_ENABLE_NOVNC=${MT5_ENABLE_NOVNC:-1}
+      - MT5_ENABLE_VNC=${MT5_ENABLE_VNC:-0}
+      - MT5_NOVNC_PORT=${MT5_NOVNC_PORT:-6080}
+      - MT5_VNC_PORT=${MT5_VNC_PORT:-5900}
+      - TZ=${TZ:-UTC}
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "terminal64.exe"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+volumes:
+  mt5-config:
