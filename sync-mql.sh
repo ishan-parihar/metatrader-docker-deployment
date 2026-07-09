@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+BASE_DIR="$(cd "$(dirname "$0")" BASE_DIR="$(cd "$(dirname "$0")" && pwd)"BASE_DIR="$(cd "$(dirname "$0")" && pwd)" pwd)"
 MQL_DIR="$BASE_DIR/mql4mt5"
 
 RED='\033[0;31m'
