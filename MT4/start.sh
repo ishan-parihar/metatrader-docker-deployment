@@ -214,7 +214,7 @@ trap cleanup SIGTERM SIGINT
 # ── Monitor loop (restart MT4 + services if they crash) ───────────────────
 RESTART_COUNT=0
 ensure_x11vnc() {
-    if ! pgrep -x x11vnc >/dev/null 2>&1; then
+    if ! pgrep -f x11vnc >/dev/null 2>&1; then
         echo "  x11vnc died, restarting..."
         x11vnc -display "$DISPLAY" -forever -nopw -quiet -bg -rfbport "$MT4_VNC_PORT" -grabkbd 2>/dev/null || true
         sleep 2
