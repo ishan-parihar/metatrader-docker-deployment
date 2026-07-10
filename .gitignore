@@ -2,6 +2,12 @@
 MT4/mt4-bin/
 MT5/mt5-bin/
 
+# MQL files (confidential EAs, scripts, indicators, presets)
+MT4/mql4/**/*.ex4
+MT4/mql4/**/*.set
+MT5/mql5/**/*.ex5
+MT5/mql5/**/*.set
+
 # Environment files (contain credentials)
 MT4/.env
 MT5/.env
