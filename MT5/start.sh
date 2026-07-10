@@ -174,16 +174,45 @@ patch_common_ini
 echo "[8] Launching MT5 Terminal..."
 cd "$MT5_DIR"
 
-# Write a .bat launcher — cmd.exe treats @ as literal, avoiding start.exe misparse
+# SECURITY: credentials go through MT5's startup-config ini, NEVER through
+# /login:/password: command-line args (args are visible to every process on
+# the HOST via ps — this leaked a real password once). The ini also bakes in
+# production settings: algo trading enabled + the MaxBars RAM cap.
+mkdir -p "$MT5_DIR/Config"
+AUTOSTART_INI="$MT5_DIR/Config/autostart.ini"
+{
+    if [ -n "${MT5_BROKER_LOGIN}" ] && [ -n "${MT5_BROKER_PASSWORD}" ]; then
+        echo "[Common]"
+        echo "Login=${MT5_BROKER_LOGIN}"
+        echo "Password=${MT5_BROKER_PASSWORD}"
+        echo "Server=${MT5_BROKER_SERVER}"
+        echo "KeepPrivate=1"
+        echo "NewsEnable=0"
+    fi
+    echo "[Experts]"
+    echo "AllowLiveTrading=1"
+    echo "AllowDllImport=0"
+    echo "Enabled=1"
+    echo "[Charts]"
+    echo "MaxBars=${MT5_MAX_BARS:-5000}"
+} > "$AUTOSTART_INI"
+chmod 600 "$AUTOSTART_INI"
+
+# .bat launcher — cmd.exe treats @ as literal, avoiding start.exe misparse;
+# only the ini PATH appears in the process list now.
 LAUNCHER="$MT5_DIR/start_mt5.bat"
 cat > "$LAUNCHER" <<BATEOF
 @echo off
-"C:\Program Files\MetaTrader 5\terminal64.exe" /portable /login:${MT5_BROKER_LOGIN} /password:${MT5_BROKER_PASSWORD} /server:${MT5_BROKER_SERVER}
+"C:\Program Files\MetaTrader 5\terminal64.exe" /portable "/config:C:\Program Files\MetaTrader 5\Config\autostart.ini"
 BATEOF
 
 wine cmd.exe /c "$LAUNCHER" 2>&1 &
 MT5_PID=$!
 echo "  PID: $MT5_PID"
+
+# Remove the plaintext ini once the terminal has read it (credentials persist
+# in the terminal's own encrypted accounts store after the first login).
+( sleep 90 && (shred -u "$AUTOSTART_INI" 2>/dev/null || rm -f "$AUTOSTART_INI") ) &
 
 # ── Step 9: Clean up unnecessary Wine processes ─────────────────────────────
 echo "[9] Cleaning up unnecessary Wine processes..."
