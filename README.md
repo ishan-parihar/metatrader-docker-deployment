@@ -139,28 +139,64 @@ AUTH_PASS=your_secure_password
 
 **Note:** Passwords with `@` are handled automatically via `.bat` launcher.
 
+## Directory Structure
+
+Each terminal owns its MQL directory. Drop EAs, scripts, indicators, and presets directly into the appropriate folder:
+
+```
+MT4/
+├── Dockerfile
+├── docker-compose.yml
+├── start.sh
+├── mql4/                  # MT4 MQL source of truth
+│   ├── Experts/           # .ex4 files
+│   ├── Indicators/        # .ex4 files
+│   ├── Scripts/           # .ex4 files
+│   ├── Presets/           # .set files
+│   └── Files/
+├── config/                # Terminal config (servers.dat, common.ini)
+└── auth/                  # Authentication proxy
+
+MT5/
+├── Dockerfile
+├── docker-compose.yml
+├── start.sh
+├── mql5/                  # MT5 MQL source of truth
+│   ├── Experts/           # .ex5 files
+│   ├── Indicators/        # .ex5 files
+│   ├── Scripts/           # .ex5 files
+│   ├── Presets/           # .set files
+│   └── Files/
+├── config/                # Terminal config (servers.dat, common.ini)
+└── auth/                  # Authentication proxy
+```
+
 ## EA/Script/Indicator Deployment
 
-Place MQL files in `mql4mt5/`:
+### Drop-in (recommended)
 
-```
-mql4mt5/
-├── MQL4/
-│   ├── Experts/      # MT4 Expert Advisors (.ex4)
-│   ├── Indicators/   # MT4 Indicators (.ex4)
-│   ├── Scripts/      # MT4 Scripts (.ex4)
-│   └── Presets/      # MT4 Preset files (.set)
-├── MQL5/
-│   ├── Experts/      # MT5 Expert Advisors (.ex5)
-│   ├── Indicators/   # MT5 Indicators (.ex5)
-│   ├── Scripts/      # MT5 Scripts (.ex5)
-│   └── Presets/      # MT5 Preset files (.set)
-```
-
-Sync changes:
+Place files directly into the terminal's MQL folder:
 
 ```bash
-./sync-mql.sh
+# MT5: copy your EA
+cp YourEA.ex5 MT5/mql5/Experts/
+
+# MT4: copy your EA
+cp YourEA.ex4 MT4/mql4/Experts/
+```
+
+### EA Bundle (automated)
+
+```bash
+./deploy-ea-bundle.sh /path/to/bundle --restart
+```
+
+A bundle = `<EA>.ex5` + `*.set` + `SHA256SUMS`. Verifies integrity, installs into the bind-mounted `MT5/mql5/`, restarts the terminal.
+
+### Sync after changes
+
+```bash
+./sync-mql.sh [mt4|mt5|all|status]
 ```
 
 ## Architecture
@@ -205,7 +241,7 @@ MT5: Internet → Cloudflare → mt5-auth:6083 → mt5-terminal:6080 (noVNC)
 
 MIT
 
-## Production deployment (1–2GB VPS playbook)
+## Production deployment (1-2GB VPS playbook)
 
 Validated on Azure East Asia B2ats_v2 (894MB RAM) running the QuantFin-R&D
 BOOK10 book (8 charts, Exness Standard Cent demo).
@@ -216,10 +252,10 @@ BOOK10 book (8 charts, Exness Standard Cent demo).
 sudo bash provision-host.sh
 ```
 
-Applies (idempotent, measured 676→338MB used on the reference box):
+Applies (idempotent, measured 676->338MB used on the reference box):
 zram compressed swap (zstd, prio 100) + 3GB disk swapfile fallback,
 snapd/lxd/multipathd purge, unattended-upgrades without auto-reboot,
-docker json-file log rotation (20m×3), UTC.
+docker json-file log rotation (20mx3), UTC.
 
 ### 2. Deploy the stack
 
@@ -237,8 +273,8 @@ On a 1GB host set in `MT5/.env`: `MT5_MEM_LIMIT=800m`, `MT5_MAX_BARS=5000`.
 
 A bundle = `<EA>.ex5` + `*.set` + `SHA256SUMS` (reference layout:
 QuantFin-R&D `STRATEGIES/PHANTOM/EA/sets/v10-cent/`). Verifies integrity,
-installs into the bind-mounted `mql4mt5/MQL5/{Experts,Presets}`, restarts the
-terminal. Re-run at every model retrain — the bundle is the redeployable unit.
+installs into the bind-mounted `MT5/mql5/{Experts,Presets}`, restarts the
+terminal. Re-run at every model retrain -- the bundle is the redeployable unit.
 
 ### 4. Verify latency to the broker (ground truth)
 
@@ -248,7 +284,7 @@ terminal. Re-run at every model retrain — the bundle is the redeployable unit.
 
 Finds the terminal's live trade-server peer and measures 5-sample TCP RTT +
 geolocation. For bar-close/day-scale EAs (broker-side SL/TP), anything under
-~150ms is economically irrelevant — choose the VPS region for reliability,
+~150ms is economically irrelevant -- choose the VPS region for reliability,
 not milliseconds.
 
 ### Security notes

@@ -11,8 +11,8 @@ services:
       - "${MT5_VNC_PORT:-5900}:5900"
     volumes:
       - mt5-config:/config
-      - ../mql4mt5/MQL5:/opt/mt5/ea
-      - ../mql4mt5/config:/opt/mt5/config
+      - ./mql5:/opt/mt5/ea
+      - ./config:/opt/mt5/config
     environment:
       - MT5_BROKER_LOGIN=${MT5_BROKER_LOGIN:-}
       - MT5_BROKER_PASSWORD=${MT5_BROKER_PASSWORD:-}

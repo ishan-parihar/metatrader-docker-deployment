@@ -1,18 +1,16 @@
 #!/bin/bash
-# sync-mql.sh - Refresh MT4/MT5 terminals to pick up new EA/Indicator/Script files
+# sync-mql.sh — Restart MT4/MT5 terminals to pick up new EA/Indicator/Script files
 #
 # Usage:
-#   ./sync-mql.sh [mt4|mt5|all]
+#   ./sync-mql.sh [mt4|mt5|all|status]
 #
 # When to run:
-#   - After adding new .ex4/.ex5 files to mql4mt5/MQL4 or mql4mt5/MQL5
+#   - After adding new .ex4/.ex5 files to MT4/mql4 or MT5/mql5
 #   - After modifying existing EA/Indicator/Script files
-#   - After changing config files in mql4mt5/config/
 
 set -euo pipefail
 
-BASE_DIR="$(cd "$(dirname "$0")" BASE_DIR="$(cd "$(dirname "$0")" && pwd)"BASE_DIR="$(cd "$(dirname "$0")" && pwd)" pwd)"
-MQL_DIR="$BASE_DIR/mql4mt5"
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -41,7 +39,6 @@ sync_terminal() {
     docker compose restart
     cd "$BASE_DIR"
 
-    # Wait for terminal to be ready
     sleep 10
 
     if docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
@@ -58,31 +55,31 @@ show_status() {
     echo ""
 
     echo "MQL4 (MT4):"
-    if [ -d "$MQL_DIR/MQL4/Experts" ]; then
-        local count=$(find "$MQL_DIR/MQL4/Experts" -name "*.ex4" 2>/dev/null | wc -l)
+    if [ -d "$BASE_DIR/MT4/mql4/Experts" ]; then
+        local count=$(find "$BASE_DIR/MT4/mql4/Experts" -name "*.ex4" 2>/dev/null | wc -l)
         echo "  Experts:  ${count} .ex4 files"
     fi
-    if [ -d "$MQL_DIR/MQL4/Indicators" ]; then
-        local count=$(find "$MQL_DIR/MQL4/Indicators" -name "*.ex4" 2>/dev/null | wc -l)
+    if [ -d "$BASE_DIR/MT4/mql4/Indicators" ]; then
+        local count=$(find "$BASE_DIR/MT4/mql4/Indicators" -name "*.ex4" 2>/dev/null | wc -l)
         echo "  Indicators: ${count} .ex4 files"
     fi
-    if [ -d "$MQL_DIR/MQL4/Scripts" ]; then
-        local count=$(find "$MQL_DIR/MQL4/Scripts" -name "*.ex4" 2>/dev/null | wc -l)
+    if [ -d "$BASE_DIR/MT4/mql4/Scripts" ]; then
+        local count=$(find "$BASE_DIR/MT4/mql4/Scripts" -name "*.ex4" 2>/dev/null | wc -l)
         echo "  Scripts:  ${count} .ex4 files"
     fi
 
     echo ""
     echo "MQL5 (MT5):"
-    if [ -d "$MQL_DIR/MQL5/Experts" ]; then
-        local count=$(find "$MQL_DIR/MQL5/Experts" -name "*.ex5" 2>/dev/null | wc -l)
+    if [ -d "$BASE_DIR/MT5/mql5/Experts" ]; then
+        local count=$(find "$BASE_DIR/MT5/mql5/Experts" -name "*.ex5" 2>/dev/null | wc -l)
         echo "  Experts:  ${count} .ex5 files"
     fi
-    if [ -d "$MQL_DIR/MQL5/Indicators" ]; then
-        local count=$(find "$MQL_DIR/MQL5/Indicators" -name "*.ex5" 2>/dev/null | wc -l)
+    if [ -d "$BASE_DIR/MT5/mql5/Indicators" ]; then
+        local count=$(find "$BASE_DIR/MT5/mql5/Indicators" -name "*.ex5" 2>/dev/null | wc -l)
         echo "  Indicators: ${count} .ex5 files"
     fi
-    if [ -d "$MQL_DIR/MQL5/Scripts" ]; then
-        local count=$(find "$MQL_DIR/MQL5/Scripts" -name "*.ex5" 2>/dev/null | wc -l)
+    if [ -d "$BASE_DIR/MT5/mql5/Scripts" ]; then
+        local count=$(find "$BASE_DIR/MT5/mql5/Scripts" -name "*.ex5" 2>/dev/null | wc -l)
         echo "  Scripts:  ${count} .ex5 files"
     fi
 
@@ -97,14 +94,14 @@ TARGET="${1:-all}"
 
 case "$TARGET" in
     mt4)
-        sync_terminal "MT4" "mt4-terminal" "MT4-docker-general"
+        sync_terminal "MT4" "mt4-terminal" "MT4"
         ;;
     mt5)
-        sync_terminal "MT5" "mt5-terminal" "MT5-docker-general"
+        sync_terminal "MT5" "mt5-terminal" "MT5"
         ;;
     all)
-        sync_terminal "MT4" "mt4-terminal" "MT4-docker-general"
-        sync_terminal "MT5" "mt5-terminal" "MT5-docker-general"
+        sync_terminal "MT4" "mt4-terminal" "MT4"
+        sync_terminal "MT5" "mt5-terminal" "MT5"
         ;;
     status)
         show_status

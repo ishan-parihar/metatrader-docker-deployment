@@ -16,7 +16,7 @@
 set -euo pipefail
 BUNDLE="${1:?usage: deploy-ea-bundle.sh <bundle-dir> [--restart]}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-MQL5="$HERE/mql4mt5/MQL5"
+MQL5="$HERE/MT5/mql5"
 
 [ -d "$BUNDLE" ] || { echo "no such bundle dir: $BUNDLE"; exit 1; }
 
