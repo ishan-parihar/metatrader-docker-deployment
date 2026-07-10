@@ -21,7 +21,15 @@ services:
       - MT5_ENABLE_VNC=${MT5_ENABLE_VNC:-0}
       - MT5_NOVNC_PORT=${MT5_NOVNC_PORT:-6080}
       - MT5_VNC_PORT=${MT5_VNC_PORT:-5900}
+      - MT5_MAX_BARS=${MT5_MAX_BARS:-5000}   # chart-bars RAM cap (biggest MT5 memory knob)
       - TZ=${TZ:-UTC}
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "pgrep", "-f", "terminal64.exe"]
       interval: 30s

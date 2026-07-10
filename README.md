@@ -204,3 +204,61 @@ MT5: Internet → Cloudflare → mt5-auth:6083 → mt5-terminal:6080 (noVNC)
 ## License
 
 MIT
+
+## Production deployment (1–2GB VPS playbook)
+
+Validated on Azure East Asia B2ats_v2 (894MB RAM) running the QuantFin-R&D
+BOOK10 book (8 charts, Exness Standard Cent demo).
+
+### 1. Provision the host FIRST
+
+```bash
+sudo bash provision-host.sh
+```
+
+Applies (idempotent, measured 676→338MB used on the reference box):
+zram compressed swap (zstd, prio 100) + 3GB disk swapfile fallback,
+snapd/lxd/multipathd purge, unattended-upgrades without auto-reboot,
+docker json-file log rotation (20m×3), UTC.
+
+### 2. Deploy the stack
+
+```bash
+./deploy-mt5.sh yourdomain.example
+```
+
+On a 1GB host set in `MT5/.env`: `MT5_MEM_LIMIT=800m`, `MT5_MAX_BARS=5000`.
+
+### 3. Deploy an EA bundle
+
+```bash
+./deploy-ea-bundle.sh /path/to/bundle --restart
+```
+
+A bundle = `<EA>.ex5` + `*.set` + `SHA256SUMS` (reference layout:
+QuantFin-R&D `STRATEGIES/PHANTOM/EA/sets/v10-cent/`). Verifies integrity,
+installs into the bind-mounted `mql4mt5/MQL5/{Experts,Presets}`, restarts the
+terminal. Re-run at every model retrain — the bundle is the redeployable unit.
+
+### 4. Verify latency to the broker (ground truth)
+
+```bash
+./scripts/check-exness-latency.sh
+```
+
+Finds the terminal's live trade-server peer and measures 5-sample TCP RTT +
+geolocation. For bar-close/day-scale EAs (broker-side SL/TP), anything under
+~150ms is economically irrelevant — choose the VPS region for reliability,
+not milliseconds.
+
+### Security notes
+
+- **Credentials never go on the command line.** `start.sh` logs in via MT5's
+  startup-config ini (`chmod 600`, shredded after startup; the terminal keeps
+  credentials in its own encrypted store afterwards). The old
+  `/login:/password:` args were visible to every process on the HOST.
+- Prefer tunnel-only access: set `MT5_BIND=127.0.0.1` (or close 6080/5900/6083
+  in the cloud firewall) and reach noVNC through the auth proxy + cloudflared.
+- MT5-side RAM knobs (baked into the autostart ini): `MaxBars=5000`, algo
+  trading pre-enabled, news off. Also hide all Market Watch symbols except
+  the traded ones after first login.
