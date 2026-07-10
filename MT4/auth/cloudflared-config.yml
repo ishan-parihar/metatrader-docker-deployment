@@ -1,0 +1,9 @@
+tunnel: <TUNNEL_ID>
+credentials-file: /home/ishanp/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: mt4.ishanparihar.com
+    service: http://localhost:6082
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404
