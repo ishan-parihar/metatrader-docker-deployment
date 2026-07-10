@@ -105,10 +105,16 @@ echo "[7b] Importing EAs and Indicators..."
 if [ -d "/opt/mt5/ea/Experts" ] && [ "$(ls -A /opt/mt5/ea/Experts/ 2>/dev/null)" ]; then
     mkdir -p "$MT5_MQL5/Experts/Files"
     cp -v /opt/mt5/ea/Experts/*.ex5 "$MT5_MQL5/Experts/" 2>/dev/null || true
-    cp -v /opt/mt5/ea/Experts/*.set "$MT5_MQL5/Presets/" 2>/dev/null || true
     echo "  ✅ EAs copied to MT5 Experts folder"
 else
     echo "  ℹ️  No EAs found in ea/Experts/ (optional)"
+fi
+
+# Copy presets from ea/Presets/ (deploy-ea-bundle.sh puts them here)
+if [ -d "/opt/mt5/ea/Presets" ] && [ "$(ls -A /opt/mt5/ea/Presets/ 2>/dev/null)" ]; then
+    mkdir -p "$MT5_MQL5/Presets"
+    cp -v /opt/mt5/ea/Presets/*.set "$MT5_MQL5/Presets/" 2>/dev/null || true
+    echo "  ✅ Presets copied from ea/Presets/"
 fi
 
 # Copy Indicator .ex5 files

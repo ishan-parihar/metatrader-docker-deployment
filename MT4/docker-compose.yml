@@ -10,8 +10,8 @@ services:
       - "5901:5900"   # VNC (optional)
     volumes:
       - ./config:/config
-      # Mount local MQL4 directory directly into the container
-      - ../mql4mt5/MQL4:/config/.wine/drive_c/Program Files (x86)/MetaTrader 4/MQL4
+      - ../mql4mt5/MQL4:/opt/mt4/ea
+      - ../mql4mt5/config:/opt/mt4/config
     env_file:
       - .env
     environment:

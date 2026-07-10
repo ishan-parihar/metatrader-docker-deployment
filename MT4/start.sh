@@ -98,10 +98,16 @@ echo "[7b] Importing EAs and Indicators..."
 if [ -d "/opt/mt4/ea/Experts" ] && [ "$(ls -A /opt/mt4/ea/Experts/ 2>/dev/null)" ]; then
     mkdir -p "$MT4_MQL4/Experts/Files"
     cp -v /opt/mt4/ea/Experts/*.ex4 "$MT4_MQL4/Experts/" 2>/dev/null || true
-    cp -v /opt/mt4/ea/Experts/*.set "$MT4_MQL4/Presets/" 2>/dev/null || true
     echo "  ✅ EAs copied to MT4 Experts folder"
 else
     echo "  ℹ️  No EAs found in ea/Experts/ (optional)"
+fi
+
+# Copy presets from ea/Presets/
+if [ -d "/opt/mt4/ea/Presets" ] && [ "$(ls -A /opt/mt4/ea/Presets/ 2>/dev/null)" ]; then
+    mkdir -p "$MT4_MQL4/Presets"
+    cp -v /opt/mt4/ea/Presets/*.set "$MT4_MQL4/Presets/" 2>/dev/null || true
+    echo "  ✅ Presets copied from ea/Presets/"
 fi
 
 # Copy Indicator .ex4 files
