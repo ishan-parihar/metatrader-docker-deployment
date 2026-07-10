@@ -60,28 +60,62 @@ After modifying MQL files, restart the terminal to pick up changes:
 ./sync-mql.sh
 ```
 
-## MT4 Auth Gateway (Production)
+## Auth Gateway (Production)
 
-For secure remote access, deploy the auth gateway:
+Both MT4 and MT5 include a login-protected gateway with brute-force protection.
+
+### MT4 Auth Gateway
 
 ```bash
 cd MT4/auth
 cp .env.example .env
 # Set AUTH_USER and AUTH_PASS
 docker compose up -d
+# Access: http://localhost:6082
 ```
 
-This creates a login-protected gateway with brute-force protection:
+### MT5 Auth Gateway
+
+```bash
+cd MT5/auth
+cp .env.example .env
+# Set AUTH_USER and AUTH_PASS
+docker compose up -d
+# Access: http://localhost:6083
+```
+
+### Features
+
 - Rate limit: 10 attempts per 5 minutes
-- Session-based authentication
-- Nginx reverse proxy to noVNC
+- Session-based authentication (24h expiry)
+- Nginx reverse proxy to noVNC with WebSocket support
+- Login page with lockout feedback
 
 ### Cloudflare Tunnel
 
 For external access via HTTPS:
 
 ```bash
+# MT4
 cloudflared tunnel --url http://localhost:6082
+
+# MT5
+cloudflared tunnel --url http://localhost:6083
+```
+
+### Production Deployment
+
+For persistent tunnels with custom domains:
+
+```bash
+# Create tunnel
+cloudflared tunnel create <name>
+
+# Route DNS
+cloudflared tunnel route dns <tunnel-id> <domain>
+
+# Run with config
+cloudflared tunnel --config cloudflared-config.yml run
 ```
 
 ## Credential Configuration
@@ -129,7 +163,8 @@ MT4_BROKER_SERVER=Exness-MT4Real8
 ## Architecture
 
 ```
-Internet → Cloudflare → mt4-auth:6082 → mt4-terminal:6081 (noVNC)
+MT4: Internet → Cloudflare → mt4-auth:6082 → mt4-terminal:6081 (noVNC)
+MT5: Internet → Cloudflare → mt5-auth:6083 → mt5-terminal:6080 (noVNC)
 ```
 
 ## License

@@ -1,0 +1,6 @@
+ingress:
+  - hostname: mt5.ishanparihar.com
+    service: http://localhost:6083
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404
