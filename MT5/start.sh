@@ -31,9 +31,14 @@ echo "╚═══════════════════════�
 # ── Step 1: Start Xvfb ─────────────────────────────────────────────────────
 rm -f /tmp/.X*-lock /tmp/.X11-unix/X*
 echo "[1] Starting Xvfb on $DISPLAY (1280x1024x16)..."
-Xvfb "$DISPLAY" -screen 0 1280x1024x16 -nolisten tcp &
+Xvfb "$DISPLAY" -screen 0 1280x1024x16 -nolisten tcp +extension GLX +extension RANDR +extension RENDER &
+# ponytail: -xkbdb not supported by Xvfb 21.x; keyboard via setxkbmap below
 XVFB_PID=$!
 sleep 2
+
+# ── Step 1b: Set keyboard layout ───────────────────────────────────────────
+echo "[1b] Setting keyboard layout..."
+setxkbmap -layout us 2>/dev/null || true
 
 # ── Step 2: Start fluxbox window manager ────────────────────────────────────
 echo "[2] Starting fluxbox window manager..."
@@ -42,7 +47,7 @@ sleep 1
 
 # ── Step 3: Start x11vnc ───────────────────────────────────────────────────
 echo "[3] Starting x11vnc on :$MT5_VNC_PORT..."
-x11vnc -display "$DISPLAY" -forever -nopw -quiet -bg -rfbport "$MT5_VNC_PORT" 2>/dev/null || true
+x11vnc -display "$DISPLAY" -forever -nopw -quiet -bg -rfbport "$MT5_VNC_PORT" -grabkbd 2>/dev/null || true
 
 # ── Step 4: Start noVNC (web-based VNC client) ─────────────────────────────
 if [ "$MT5_ENABLE_NOVNC" = "1" ]; then
@@ -147,32 +152,58 @@ echo "  ✅ Import complete"
 
 # ── Step 7c: Patch MT5 config with broker credentials ─────────────────────
 COMMON_INI="$MT5_DIR/Config/common.ini"
-if [ -n "$MT5_BROKER_LOGIN" ] && [ -n "$MT5_BROKER_SERVER" ]; then
-    echo "[7c] Patching common.ini with broker credentials..."
-    # common.ini is UTF-16LE encoded — convert, patch, convert back
-    python3 -c "
-import sys, re
+patch_common_ini() {
+    if [ -n "$MT5_BROKER_LOGIN" ] && [ -n "$MT5_BROKER_SERVER" ]; then
+        echo "[7c] Patching common.ini with broker credentials..."
+        python3 -c "
+import re, os
 
 path = '$COMMON_INI'
-try:
+login = '$MT5_BROKER_LOGIN'
+password = '$MT5_BROKER_PASSWORD'
+server = '$MT5_BROKER_SERVER'
+
+# Read existing content (try UTF-16LE first, fall back to UTF-8)
+text = ''
+if os.path.exists(path):
     with open(path, 'rb') as f:
         raw = f.read()
-    # Decode UTF-16LE (skip BOM if present)
-    text = raw.decode('utf-16-le', errors='replace')
-    # Replace Login and Server under [Common]
-    text = re.sub(r'(Login=)[^\n]*', r'\g<1>$MT5_BROKER_LOGIN', text, count=1)
-    text = re.sub(r'(Server=)[^\n]*', r'\g<1>$MT5_BROKER_SERVER', text, count=1)
-    with open(path, 'wb') as f:
-        f.write(text.encode('utf-16-le'))
-    print('  Login=' + '$MT5_BROKER_LOGIN')
-    print('  Server=' + '$MT5_BROKER_SERVER')
-except Exception as e:
-    print(f'  WARNING: Could not patch common.ini: {e}')
+    try:
+        text = raw.decode('utf-16-le')
+    except:
+        text = raw.decode('utf-8', errors='replace')
+
+# Ensure [Common] section exists
+if '[Common]' not in text:
+    text = '[Common]\n' + text
+
+# Insert or replace Login, Server, Password under [Common]
+def upsert(section_text, key, value):
+    pattern = re.compile(rf'({re.escape(key)}=)[^\n]*', re.IGNORECASE)
+    line = f'{key}={value}'
+    if pattern.search(section_text):
+        return pattern.sub(rf'\g<1>{value}', section_text, count=1)
+    # Insert after [Common] section header
+    return re.sub(r'(\[Common\])', rf'\g<1>\n{line}', section_text, count=1)
+
+text = upsert(text, 'Login', login)
+text = upsert(text, 'Server', server)
+text = upsert(text, 'Password', password)
+
+# Write back as plain text (MT5 accepts both encodings)
+with open(path, 'w', encoding='utf-8') as f:
+    f.write(text)
+
+print(f'  Login={login}')
+print(f'  Server={server}')
+print(f'  Password=****')
 " 2>&1
-    echo "  ✅ common.ini patched"
-else
-    echo "[7c] No credentials set, skipping config patch"
-fi
+        echo "  ✅ common.ini patched"
+    else
+        echo "[7c] No credentials set, skipping config patch"
+    fi
+}
+patch_common_ini
 
 # ── Step 8: Start MT5 terminal ─────────────────────────────────────────────
 echo "[8] Launching MT5 Terminal..."
@@ -224,17 +255,38 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
-# ── Monitor loop (restart MT5 if it crashes) ───────────────────────────────
+# ── Helper: restart x11vnc if it dies ──────────────────────────────────────
+ensure_x11vnc() {
+    if ! pgrep -f x11vnc >/dev/null 2>&1; then
+        echo "  x11vnc died, restarting..."
+        x11vnc -display "$DISPLAY" -forever -nopw -quiet -bg -rfbport "$MT5_VNC_PORT" -grabkbd 2>/dev/null || true
+    fi
+}
+
+# ── Helper: restart websockify if it dies ───────────────────────────────────
+ensure_websockify() {
+    if ! pgrep -f websockify >/dev/null 2>&1; then
+        echo "  websockify died, restarting..."
+        websockify --web=/usr/share/novnc/ "$MT5_NOVNC_PORT" localhost:"$MT5_VNC_PORT" &
+        sleep 1
+    fi
+}
+
+# ── Monitor loop (restart MT5 + display stack if they crash) ───────────────
 RESTART_COUNT=0
 while true; do
+    ensure_x11vnc
+    ensure_websockify
     if ! kill -0 $MT5_PID 2>/dev/null; then
         RESTART_COUNT=$((RESTART_COUNT + 1))
         echo "WARNING: MT5 process died. Restarting (#$RESTART_COUNT)..."
+        # Re-patch common.ini (MT5 may have overwritten it)
+        patch_common_ini
         cd "$MT5_DIR"
         wine cmd.exe /c "$LAUNCHER" 2>&1 &
         MT5_PID=$!
         echo "  New PID: $MT5_PID"
         sleep 15
     fi
-    sleep 30
+    sleep 10
 done

@@ -36,6 +36,7 @@ RUN dpkg --add-architecture i386 && \
         xdotool \
         fluxbox \
         xauth \
+        xkb-data \
         netcat-openbsd \
         procps \
         unzip \
