@@ -154,51 +154,16 @@ echo "  ✅ Import complete"
 COMMON_INI="$MT5_DIR/Config/common.ini"
 patch_common_ini() {
     if [ -n "$MT5_BROKER_LOGIN" ] && [ -n "$MT5_BROKER_SERVER" ]; then
-        echo "[7c] Patching common.ini with broker credentials..."
-        python3 -c "
-import re, os
-
-path = '$COMMON_INI'
-login = '$MT5_BROKER_LOGIN'
-password = '$MT5_BROKER_PASSWORD'
-server = '$MT5_BROKER_SERVER'
-
-# Read existing content (try UTF-16LE first, fall back to UTF-8)
-text = ''
-if os.path.exists(path):
-    with open(path, 'rb') as f:
-        raw = f.read()
-    try:
-        text = raw.decode('utf-16-le')
-    except:
-        text = raw.decode('utf-8', errors='replace')
-
-# Ensure [Common] section exists
-if '[Common]' not in text:
-    text = '[Common]\n' + text
-
-# Insert or replace Login, Server, Password under [Common]
-def upsert(section_text, key, value):
-    pattern = re.compile(rf'({re.escape(key)}=)[^\n]*', re.IGNORECASE)
-    line = f'{key}={value}'
-    if pattern.search(section_text):
-        return pattern.sub(rf'\g<1>{value}', section_text, count=1)
-    # Insert after [Common] section header
-    return re.sub(r'(\[Common\])', rf'\g<1>\n{line}', section_text, count=1)
-
-text = upsert(text, 'Login', login)
-text = upsert(text, 'Server', server)
-text = upsert(text, 'Password', password)
-
-# Write back as plain text (MT5 accepts both encodings)
-with open(path, 'w', encoding='utf-8') as f:
-    f.write(text)
-
-print(f'  Login={login}')
-print(f'  Server={server}')
-print(f'  Password=****')
-" 2>&1
-        echo "  ✅ common.ini patched"
+        echo "[7c] Writing common.ini with broker credentials..."
+        # Always write a clean file. MT5 adds its own settings on top when it runs.
+        # Avoids encoding corruption from trying to merge with MT5's UTF-16LE output.
+        cat > "$COMMON_INI" <<'INIEOF'
+[Common]
+INIEOF
+        echo "Login=$MT5_BROKER_LOGIN" >> "$COMMON_INI"
+        echo "Server=$MT5_BROKER_SERVER" >> "$COMMON_INI"
+        echo "Password=$MT5_BROKER_PASSWORD" >> "$COMMON_INI"
+        echo "  ✅ common.ini written"
     else
         echo "[7c] No credentials set, skipping config patch"
     fi
