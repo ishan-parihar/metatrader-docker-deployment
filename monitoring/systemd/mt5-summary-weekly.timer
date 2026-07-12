@@ -1,0 +1,11 @@
+[Unit]
+Description=MT5 Monitoring Weekly Summary Timer
+
+[Timer]
+# Sunday at 18:00 local time (same as weekly health check)
+OnCalendar=Sun *-*-* 18:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

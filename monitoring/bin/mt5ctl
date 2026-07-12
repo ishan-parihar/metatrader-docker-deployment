@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# mt5ctl — AD-12 MT5 control utility for on-demand checks.
+#
+# Subcommands:
+#   status    — quick health check (1-line status)
+#   health    — full health check (same as logcheck)
+#   pnl       — current account state (balance, equity, open PnL, positions)
+#   trades    — recent trades (today / week / month)
+#   charts    — chart attach status (magics, trees, warmup)
+#   summary   — daily/weekly/monthly summary
+#   alert     — send a test alert
+#   help      — show this help
+#
+# Usage:
+#   mt5ctl status
+#   mt5ctl pnl
+#   mt5ctl trades today
+#   mt5ctl summary weekly
+#   mt5ctl alert test
+
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOGCHECK="${SCRIPT_DIR}/mt5_logcheck.sh"
+SUMMARY="${SCRIPT_DIR}/mt5_summary.py"
+ALERT="${SCRIPT_DIR}/mt5_alert.py"
+REPORT_DIR="/home/ishanp/mt5-deploy/logcheck/reports"
+
+cmd="${1:-help}"
+shift || true
+
+case "$cmd" in
+    status)
+        # Quick health: just the last logcheck report's severity
+        latest="${REPORT_DIR}/latest.json"
+        if [[ -f "$latest" ]]; then
+            python3 -c "
+import json, sys
+with open('$latest') as f:
+    r = json.load(f)
+sev = r.get('severity', '?')
+icon = {'OK':'✅', 'WARNING':'⚠️', 'CRITICAL':'🔴'}.get(sev, '?')
+ts = r.get('timestamp', '?')[:16]
+ch = r.get('charts', {})
+loaded = ch.get('loaded_count', ch.get('found_count', '?'))
+expected = ch.get('expected_count', '?')
+print(f'{icon} {sev} | charts {loaded}/{expected} | last check {ts}')
+"
+        else
+            echo "⚠️  No report yet — run: mt5ctl health"
+        fi
+        ;;
+
+    health)
+        "${LOGCHECK}" --days "${1:-1}"
+        ;;
+
+    pnl)
+        # Read the MQL5 account snapshot via docker exec
+        # FILE_COMMON writes to: /config/.wine/drive_c/users/root/AppData/Roaming/MetaQuotes/Terminal/Common/Files/
+        docker exec mt5-terminal cat \
+            "/config/.wine/drive_c/users/root/AppData/Roaming/MetaQuotes/Terminal/Common/Files/account_snapshot.json" \
+            2>/dev/null | python3 -c "
+import json, sys
+raw = sys.stdin.buffer.read()
+# MT5 writes text files as UTF-16 LE by default — handle BOM
+if raw[:2] == b'\xff\xfe':
+    text = raw[2:].decode('utf-16-le', errors='replace')
+elif raw[:2] == b'\xfe\xff':
+    text = raw[2:].decode('utf-16-be', errors='replace')
+elif raw[:3] == b'\xef\xbb\xbf':
+    text = raw[3:].decode('utf-8', errors='replace')
+else:
+    text = raw.decode('utf-8', errors='replace')
+try:
+    s = json.loads(text)
+except Exception as e:
+    print(f'❌ Cannot read snapshot: {e}')
+    print('   Is AccountSnapshot.mq5 attached to a chart?')
+    sys.exit(1)
+print(f'💰 Account: {s.get(\"login\",\"?\")} @ {s.get(\"server\",\"?\")}')
+print(f'   Balance:      {s.get(\"balance\",\"?\")} {s.get(\"currency\",\"\")}')
+print(f'   Equity:       {s.get(\"equity\",\"?\")}')
+print(f'   Open PnL:     {s.get(\"profit\",\"?\")}')
+print(f'   Margin:       {s.get(\"margin\",\"?\")} (free: {s.get(\"free_margin\",\"?\")})')
+print(f'   Margin level: {s.get(\"margin_level\",\"?\")}%')
+print(f'   Leverage:     {s.get(\"leverage\",\"?\")}')
+print(f'   Snapshot:     {s.get(\"ts\",\"?\")}')
+positions = s.get('positions', [])
+print(f'   Open positions: {len(positions)}')
+for p in positions:
+    pnl_str = f'+{p[\"profit\"]:.2f}' if p['profit'] >= 0 else f'{p[\"profit\"]:.2f}'
+    print(f'     #{p[\"ticket\"]} {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} @ {p[\"open_price\"]} → {p[\"current_price\"]} | PnL {pnl_str} | magic={p[\"magic\"]}')
+"
+        ;;
+
+    trades)
+        # Show trades from the last N days
+        days="${1:-today}"
+        case "$days" in
+            today) days=2 ;;  # 2 days to catch latest MQL5 log
+            week|weekly) days=7 ;;
+            month|monthly) days=30 ;;
+            *) days="$days" ;;
+        esac
+        echo "── Trades (last $days day(s)) ──"
+        "${LOGCHECK}" --days "$days" --json 2>/dev/null | python3 -c "
+import json, sys
+r = json.load(sys.stdin)
+t = r.get('trades', {})
+entries = t.get('entries', [])
+deals = t.get('deal_list', [])
+print(f'Entries: {len(entries)} | Deals: {len(deals)}')
+print()
+print('Entry signals:')
+for e in entries[-20:]:
+    print(f'  {e[\"time\"]} {e[\"source\"]} [{e[\"atom\"]}] dir={e[\"dir\"]} score={e[\"score\"]:.4f} lots={e[\"lots\"]} SL={e[\"sl\"]}')
+print()
+print('Deals:')
+for d in deals[-20:]:
+    print(f'  {d[\"time\"]} #{d[\"deal_id\"]} {d[\"side\"]} {d[\"lots\"]} {d[\"symbol\"]} @ {d[\"price\"]}')
+"
+        ;;
+
+    charts)
+        echo "── Chart attach status ──"
+        # Use 2-day window to ensure we catch the latest chart state
+        # (MT5 only writes MQL5 log on EA activity, so today's log may be stale)
+        "${LOGCHECK}" --days 2 --json 2>/dev/null | python3 -c "
+import json, sys
+r = json.load(sys.stdin)
+ch = r.get('charts', {})
+loaded = ch.get('loaded_count', ch.get('found_count', '?'))
+expected = ch.get('expected_count', '?')
+print(f'Loaded: {loaded}/{expected}')
+if ch.get('missing_magics'):
+    print(f'🔴 Missing: {ch[\"missing_magics\"]}')
+if ch.get('wrong_build_magics'):
+    print(f'🔴 Wrong build: {ch[\"wrong_build_magics\"]}')
+if ch.get('fatals'):
+    for f in ch['fatals']:
+        print(f'🔴 FATAL (RG-22): {f[\"chart_tf\"]} chart, set expects {f[\"expected_tf\"]} @ {f[\"time\"]}')
+print()
+for mg, info in sorted(ch.get('charts', {}).items()):
+    warmup = info.get('warmup_bars')
+    warmup_str = f'warmup={warmup}' if warmup else '⚠️ NO warmup'
+    trees = info.get('trees')
+    trees_ok = '✅' if trees == 141 else ('🔴' if trees else '⚠️')
+    trees_str = f'{trees} trees' if trees else 'no banner'
+    print(f'  {trees_ok} magic={mg} {info.get(\"symbol\",\"?\")},{info.get(\"tf\",\"?\")} {info.get(\"atom\",\"?\")} ({trees_str}, {warmup_str})')
+
+# Show auxiliary EAs
+aux = ch.get('auxiliary_eas', {})
+if aux:
+    print()
+    print(f'Auxiliary EAs ({len(aux)}):')
+    for name, ainfo in sorted(aux.items()):
+        icon = '✅' if ainfo.get('state') == 'loaded' else '🔴'
+        print(f'  {icon} {name} ({ainfo.get(\"symbol\",\"?\")},{ainfo.get(\"tf\",\"?\")}) state={ainfo.get(\"state\",\"?\")}')
+"
+        ;;
+
+    summary)
+        period="${1:-daily}"
+        case "$period" in
+            daily|weekly|monthly) ;;
+            *) echo "Usage: mt5ctl summary {daily|weekly|monthly}"; exit 1 ;;
+        esac
+        python3 "${SUMMARY}" "$period"
+        ;;
+
+    alert)
+        subcmd="${1:-test}"
+        case "$subcmd" in
+            test)
+                echo "Sending test alert..."
+                python3 "${ALERT}" \
+                    --severity WARNING \
+                    --subject "[AD-12] Test alert from mt5ctl" \
+                    --body "This is a test alert from mt5ctl at $(date -Iseconds). If you received this, both email and Telegram channels are working."
+                ;;
+            *)
+                echo "Usage: mt5ctl alert test"
+                exit 1
+                ;;
+        esac
+        ;;
+
+    help|--help|-h|"")
+        cat <<EOF
+mt5ctl — AD-12 MT5 control utility
+
+Usage: mt5ctl <command> [args]
+
+Commands:
+  status              Quick health (1-line)
+  health [days]       Full health check (default: 1 day)
+  pnl                 Current account state (balance, equity, PnL, positions)
+  trades <period>     Recent trades (today|week|month|N)
+  charts              Chart attach status (magics, trees, warmup)
+  summary <period>    Daily/weekly/monthly summary
+  alert test          Send a test alert (email + Telegram)
+
+Examples:
+  mt5ctl status
+  mt5ctl pnl
+  mt5ctl trades today
+  mt5ctl summary weekly
+  mt5ctl alert test
+
+Reports: /home/ishanp/mt5-deploy/logcheck/reports/
+EOF
+        ;;
+
+    *)
+        echo "Unknown command: $cmd"
+        echo "Run 'mt5ctl help' for usage."
+        exit 1
+        ;;
+esac

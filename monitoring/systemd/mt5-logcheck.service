@@ -1,0 +1,11 @@
+[Unit]
+Description=MT5 Monitoring Weekly Log Check
+Documentation=file:///home/%USER/mt5-monitoring/README.md
+
+[Service]
+Type=oneshot
+User=%USER
+WorkingDirectory=%HOME/mt5-monitoring
+ExecStart=%HOME/mt5-monitoring/bin/mt5_logcheck.sh --days 7
+StandardOutput=append:%HOME/mt5-monitoring/state/logcheck.log
+StandardError=append:%HOME/mt5-monitoring/state/logcheck.log

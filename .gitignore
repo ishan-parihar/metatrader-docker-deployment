@@ -19,6 +19,9 @@ MT5/config/
 # Docker volumes
 *.log
 
+# Monitoring stack — alert config contains secrets (SMTP password, Telegram bot token)
+monitoring/config/alert.conf
+
 # OS files
 .DS_Store
 Thumbs.db

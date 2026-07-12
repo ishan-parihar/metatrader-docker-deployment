@@ -287,6 +287,43 @@ geolocation. For bar-close/day-scale EAs (broker-side SL/TP), anything under
 ~150ms is economically irrelevant -- choose the VPS region for reliability,
 not milliseconds.
 
+### 5. Deploy the monitoring stack (optional but recommended)
+
+```bash
+# Configure alert channels first
+cp monitoring/config/alert.conf.example monitoring/config/alert.conf
+nano monitoring/config/alert.conf   # fill in SMTP + Telegram credentials
+chmod 600 monitoring/config/alert.conf
+
+# One-command install
+./deploy-monitoring.sh
+```
+
+This deploys a complete health monitoring + alerting + Telegram bot stack:
+
+- **Weekly health check** (Sunday 18:00) — verifies container, MT5 process,
+  broker connection, all expected charts loaded with correct magics, 141-tree
+  build confirmation, warmup completed, no FATAL errors
+- **Daily summary email** (23:00) — PnL, trade count, expectation band check
+- **Weekly summary email** (Sunday 18:00) — same with 7-day window
+- **Telegram bot** (always running) — reply to `/status`, `/pnl`, `/charts`,
+  `/trades`, `/summary`, `/alert`, `/help` in your Telegram chat
+- **AccountSnapshot EA** — already in `MT5/mql5/Experts/AccountSnapshot.mq5`;
+  attach to any chart in MT5 to start streaming live equity/PnL
+
+On-demand CLI (via SSH):
+
+```bash
+export PATH="$HOME/mt5-monitoring/bin:$PATH"
+mt5ctl status          # 1-line health
+mt5ctl pnl             # live account state
+mt5ctl charts          # chart attach status
+mt5ctl summary weekly  # weekly summary
+mt5ctl alert test      # test email + Telegram
+```
+
+See `monitoring/README.md` for full documentation.
+
 ### Security notes
 
 - **Credentials never go on the command line.** `start.sh` logs in via MT5's

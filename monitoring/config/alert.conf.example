@@ -1,0 +1,23 @@
+# AD-12 MT5 Alert Configuration — TEMPLATE
+# Copy to alert.conf and fill in your credentials.
+# File perms on the real config: 0600 (contains secrets)
+# Location on VPS: ~/mt5-monitoring/config/alert.conf
+
+[email]
+to = your-email@example.com
+from = your-email@example.com
+subject_prefix = [MT5-Monitor]
+
+; SMTP config (used on VPS where gog isn't installed)
+; For Gmail: create an App Password at https://myaccount.google.com/apppasswords
+; (requires 2-Step Verification to be enabled)
+smtp_host = smtp.gmail.com
+smtp_port = 587
+smtp_user = your-email@example.com
+smtp_password = your-app-password-here
+
+[telegram]
+; Create a bot via @BotFather, then send /start to it and get the chat_id
+; via https://api.telegram.org/bot<TOKEN>/getUpdates
+bot_token = your-bot-token-here
+chat_id = your-chat-id-here

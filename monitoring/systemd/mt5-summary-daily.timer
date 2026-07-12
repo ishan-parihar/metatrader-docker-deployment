@@ -1,0 +1,11 @@
+[Unit]
+Description=MT5 Monitoring Daily Summary Timer
+
+[Timer]
+# Daily at 23:00 local time
+OnCalendar=*-*-* 23:00:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=MT5 Monitoring Telegram Bot Handler
+Documentation=file:///home/%USER/mt5-monitoring/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%USER
+WorkingDirectory=%HOME/mt5-monitoring
+ExecStart=/usr/bin/python3 %HOME/mt5-monitoring/bin/mt5_bot.py
+Restart=always
+RestartSec=10
+StandardOutput=append:%HOME/mt5-monitoring/state/bot.log
+StandardError=append:%HOME/mt5-monitoring/state/bot.log
+
+[Install]
+WantedBy=multi-user.target
