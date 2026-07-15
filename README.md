@@ -306,20 +306,25 @@ This deploys a complete health monitoring + alerting + Telegram bot stack:
   build confirmation, warmup completed, no FATAL errors
 - **Daily summary email** (23:00) — PnL, trade count, expectation band check
 - **Weekly summary email** (Sunday 18:00) — same with 7-day window
-- **Telegram bot** (always running) — reply to `/status`, `/pnl`, `/charts`,
-  `/trades`, `/summary`, `/alert`, `/help` in your Telegram chat
-- **AccountSnapshot EA** — already in `MT5/mql5/Experts/AccountSnapshot.mq5`;
-  attach to any chart in MT5 to start streaming live equity/PnL
+- **Telegram bot** (always running) — unified dashboard commands:
+  `/dashboard` (full), `/positions`, `/history`, `/exposure`, `/drawdown`,
+  `/risk`, `/orders`, `/equity`, `/rolling`, plus `/status`, `/health`,
+  `/charts`, `/help` — all clickable in Telegram's command menu
+- **AccountSnapshot EA v4.02** — already in `MT5/mql5/Experts/AccountSnapshot.mq5`;
+  attach to any chart in MT5 to start streaming live equity/PnL with historical
+  peak reconstruction (drawdown from account inception)
 
 On-demand CLI (via SSH):
 
 ```bash
 export PATH="$HOME/mt5-monitoring/bin:$PATH"
-mt5ctl status          # 1-line health
-mt5ctl pnl             # live account state
-mt5ctl charts          # chart attach status
-mt5ctl summary weekly  # weekly summary
-mt5ctl alert test      # test email + Telegram
+mt5ctl status              # 1-line health
+mt5ctl dashboard           # full dashboard
+mt5ctl dashboard positions # open trades
+mt5ctl dashboard drawdown  # peak equity + drawdown
+mt5ctl health              # full health check
+mt5ctl charts              # chart attach status
+mt5ctl alert test          # test email + Telegram
 ```
 
 See `monitoring/README.md` for full documentation.

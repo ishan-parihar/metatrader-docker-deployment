@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """
-mt5_bot.py — AD-12 Telegram bot handler v2.
+mt5_bot.py — AD-12 Telegram bot handler v4.
 
-Consolidated commands:
-  /status   — comprehensive snapshot (positions + history + rolling PnL)
-  /health   — full health check
-  /charts   — chart attach status
-  /help     — show commands
+Unified dashboard architecture:
+  /dashboard [section]  — full dashboard or zoom into one dimension
+  /status               — 1-line health
+  /health               — full logcheck
+  /charts               — chart attach status
+  /help                 — show commands
 
-Config: /home/ishanp/mt5-deploy/logcheck/config/alert.conf [telegram] section.
+Sections: positions, history, exposure, drawdown, risk, orders, equity, rolling
 """
 
 import argparse
@@ -122,22 +123,72 @@ def get_updates(token: str, offset: int | None = None,
 # ── Command routing ───────────────────────────────────────────────────────
 
 HELP_TEXT = """\
-🤖 *AD-12 MT5 Bot*
+<b>AD-12 MT5 Bot v4</b>
 
-/status  — Full snapshot (positions + history + rolling PnL)
-/health  — Health check
-/charts  — Chart attach status
-/help    — This message
+<b>── Dashboard ──</b>
+/dashboard     Full dashboard
+/positions     Open trades + totals
+/history       Closed trades + stats
+/exposure      By symbol + strategy
+/drawdown      Peak equity + drawdown
+/risk          Margin + per-position R:R
+/orders        Pending orders
+/equity        Equity curve
+/rolling       Daily/weekly/monthly
 
-One command, everything you need."""
+<b>── System ──</b>
+/status       1-line health check
+/health       Full health report
+/charts       Chart attach status
+/help         This message"""
 
-# Alias map: /pnl, /open, /history, /snapshot all map to /status
+# Aliases — everything goes to dashboard
 CMD_ALIASES = {
-    "pnl": "status",
-    "open": "status",
-    "history": "status",
-    "snapshot": "status",
+    "snap": "dashboard",
+    "pnl": "dashboard",
+    "open": "dashboard",
+    "positions": "dashboard positions",
+    "history": "dashboard history",
+    "exposure": "dashboard exposure",
+    "drawdown": "dashboard drawdown",
+    "risk": "dashboard risk",
+    "orders": "dashboard orders",
+    "equity": "dashboard equity",
+    "rolling": "dashboard rolling",
 }
+
+VALID_SECTIONS = {"positions", "history", "exposure", "drawdown",
+                  "risk", "orders", "equity", "rolling"}
+
+# Telegram Bot API command menu — these appear as clickable / commands
+BOT_COMMANDS = [
+    {"command": "dashboard",     "description": "📊 Full dashboard — all dimensions"},
+    {"command": "positions",     "description": "📋 Open trades + totals"},
+    {"command": "history",       "description": "📋 Closed trades + stats"},
+    {"command": "exposure",      "description": "🎯 By symbol + strategy"},
+    {"command": "drawdown",      "description": "📉 Peak equity + drawdown"},
+    {"command": "risk",          "description": "⚠️ Margin + per-position R:R"},
+    {"command": "orders",        "description": "📋 Pending orders"},
+    {"command": "equity",        "description": "📈 Equity curve"},
+    {"command": "rolling",       "description": "📈 Daily/weekly/monthly PnL"},
+    {"command": "status",        "description": "✅ 1-line health check"},
+    {"command": "health",        "description": "🔍 Full health report"},
+    {"command": "charts",        "description": "📊 Chart attach status"},
+    {"command": "help",          "description": "❓ Show this message"},
+]
+
+
+def register_commands(token: str):
+    """Register bot commands with Telegram so they appear as clickable / menu."""
+    try:
+        params = {"commands": json.dumps(BOT_COMMANDS)}
+        r = tg_api(token, "setMyCommands", params)
+        if r.get("ok"):
+            log(f"registered {len(BOT_COMMANDS)} commands with Telegram")
+        else:
+            log(f"setMyCommands failed: {r}")
+    except Exception as e:
+        log(f"setMyCommands error: {e}")
 
 
 def run_mt5ctl(args: list[str], timeout: int = 60) -> str:
@@ -158,27 +209,79 @@ def run_mt5ctl(args: list[str], timeout: int = 60) -> str:
         return f"❌ Error: {e}"
 
 
+def escape_html(text: str) -> str:
+    """Escape HTML special characters for Telegram."""
+    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+
+def format_tg(text: str) -> str:
+    """Convert structured mt5ctl output to HTML for Telegram.
+
+    Headers (💰, ──) → <b>bold</b>.
+    Data blocks → <pre>monospace</pre>.
+    Preserves column alignment while adding visual hierarchy.
+    """
+    if not text:
+        return text
+
+    lines = text.split('\n')
+    result = []
+    pre_buf = []
+
+    def flush_pre():
+        if pre_buf:
+            result.append('<pre>' + '\n'.join(pre_buf) + '</pre>')
+            pre_buf.clear()
+
+    for line in lines:
+        stripped = line.strip()
+        # Header detection: 💰 account header or ── section separators (without │)
+        is_header = (
+            stripped.startswith('\U0001f4b0') or
+            (stripped.startswith('\u2500\u2500') and '│' not in stripped)
+        )
+
+        if is_header:
+            flush_pre()
+            result.append(f'<b>{escape_html(stripped)}</b>')
+        elif not stripped:
+            pre_buf.append('')
+        else:
+            pre_buf.append(escape_html(line))
+
+    flush_pre()
+    return '\n'.join(result)
+
+
 def handle_command(command: str, args: list[str]) -> str:
     cmd = command.lower().lstrip("/")
 
     # Resolve aliases
-    cmd = CMD_ALIASES.get(cmd, cmd)
+    if cmd in CMD_ALIASES:
+        resolved = CMD_ALIASES[cmd]
+        parts = resolved.split()
+        return format_tg(run_mt5ctl(parts + args))
 
     if cmd in ("help", "start"):
         return HELP_TEXT
 
+    if cmd == "dashboard":
+        section = args[0] if args and args[0] in VALID_SECTIONS else None
+        if section:
+            return format_tg(run_mt5ctl(["dashboard", section]))
+        return format_tg(run_mt5ctl(["dashboard"]))
+
     if cmd == "status":
-        return run_mt5ctl(["snapshot"])
+        return format_tg(run_mt5ctl(["status"]))
 
     if cmd == "health":
         days = args[0] if args and args[0].isdigit() else "1"
-        return run_mt5ctl(["health", days])
+        return format_tg(run_mt5ctl(["health", days]))
 
     if cmd == "charts":
-        return run_mt5ctl(["charts"])
+        return format_tg(run_mt5ctl(["charts"]))
 
-    return f"❌ Unknown command: /{command}\n\nType /help for the list."
-
+    return f"\u274c Unknown: /{escape_html(command)}\n\nType /help"
 
 # ── Main loop ─────────────────────────────────────────────────────────────
 
@@ -213,10 +316,10 @@ def process_updates(token: str, updates: list[dict]) -> int | None:
         try:
             reply = handle_command(command, args)
         except Exception as e:
-            reply = f"❌ Handler error: {e}"
+            reply = f"\u274c Handler error: {escape_html(str(e))}"
             log(f"handler error: {e}")
 
-        parse_mode = "Markdown" if command.lower() in ("/help", "/start") else None
+        parse_mode = "HTML"
         send_message(token, chat_id, reply, parse_mode=parse_mode)
 
     return max_update_id + 1 if max_update_id else None
@@ -242,6 +345,9 @@ def main():
 
     token = cfg["bot_token"]
     log(f"bot starting (chat_id={ALLOWED_CHAT_ID}, once={args.once})")
+
+    # Register clickable / commands with Telegram
+    register_commands(token)
 
     offset = args.offset
     while True:

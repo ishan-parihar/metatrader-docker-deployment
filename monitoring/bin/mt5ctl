@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# mt5ctl — AD-12 MT5 control utility for on-demand checks.
+# mt5ctl — AD-12 MT5 control utility v4.
 #
 # Commands:
-#   snapshot    — comprehensive account snapshot (positions + history + rolling)
-#   status      — quick health (1-line)
-#   health      — full health check (logcheck)
-#   charts      — chart attach status
-#   alert       — send test alert
-#   help        — show this help
+#   dashboard [section]    Unified dashboard. Sections: positions, history,
+#                          exposure, drawdown, risk, orders, equity, rolling
+#   dashboard -json        Raw JSON
+#   status                 1-line health
+#   health [days]          Full health check (logcheck)
+#   charts                 Chart attach status
+#   alert test             Send test alert
 #
 # Usage:
-#   mt5ctl snapshot          # everything in one shot
-#   mt5ctl snapshot -json    # raw JSON output
+#   mt5ctl dashboard           # full dashboard — all dimensions
+#   mt5ctl dashboard exposure  # zoom into exposure breakdown
+#   mt5ctl dashboard -json     # raw JSON
 #   mt5ctl status
-#   mt5ctl health
-#   mt5ctl charts
 
-set -euo pipefail
+set -eo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGCHECK="${SCRIPT_DIR}/mt5_logcheck.sh"
 ALERT="${SCRIPT_DIR}/mt5_alert.py"
@@ -49,103 +49,359 @@ except Exception as e:
 }
 
 case "$cmd" in
-    snapshot)
-        fmt="${1:-text}"
-        if [[ "$fmt" == "-json" || "$fmt" == "json" ]]; then
+    dashboard)
+        section="${1:-all}"
+        if [[ "$section" == "-json" || "$section" == "json" ]]; then
             _read_snapshot
             exit 0
         fi
 
         _read_snapshot | python3 -c "
 import json, sys
+from collections import defaultdict
+
 s = json.load(sys.stdin)
+SECTION = '$section'
+
+SEP = '\u2500\u2500'
+W = 42  # section header width
+
+def fmt_money(v, sign=False):
+    s = f'{v:+,.2f}' if sign else f'{v:,.2f}'
+    return s
+
+def section_header(out, icon, title, count=None):
+    label = f'{icon} {title}'
+    if count is not None:
+        label += f' ({count})'
+    pad = max(0, W - len(label) - 3)
+    dashes = SEP[0] * pad  # ponytail: reuse SEP char instead of escape hell
+    out.append(f'{SEP} {label} {SEP}{dashes}')
+
+def section_end(out):
+    pass  # ponytail: section headers already have visual separators
 
 # ── Account header ──
-login = s.get('login', '?')
-server = s.get('server', '?')
-balance = s.get('balance', 0)
-equity = s.get('equity', 0)
-currency = s.get('currency', '')
-profit = s.get('profit', 0)
-margin = s.get('margin', 0)
-free_margin = s.get('free_margin', 0)
-margin_level = s.get('margin_level', 0)
-leverage = s.get('leverage', 0)
-ts = s.get('ts', '?')
+def show_account(out):
+    login = s.get('login', '?')
+    server = s.get('server', '?')
+    balance = s.get('balance', 0)
+    equity = s.get('equity', 0)
+    currency = s.get('currency', '')
+    profit = s.get('profit', 0)
+    margin = s.get('margin', 0)
+    free_margin = s.get('free_margin', 0)
+    margin_level = s.get('margin_level', 0)
+    leverage = s.get('leverage', 0)
+    ts = s.get('ts', '?')
+    peak = s.get('peak_equity', 0)
+    dd = s.get('drawdown_pct', 0)
+    margin_util = s.get('margin_utilization', 0)
 
-net_sign = '+' if profit >= 0 else ''
-print(f'💰 Account: {login} @ {server}')
-print(f'   Balance:    {balance:.2f} {currency}')
-print(f'   Equity:     {equity:.2f}')
-print(f'   Open PnL:   {net_sign}{profit:.2f}')
-print(f'   Margin:     {margin:.2f} (free: {free_margin:.2f})')
-print(f'   Mgn Level:  {margin_level:.1f}% | Leverage: 1:{leverage}')
-print(f'   Updated:    {ts}')
+    if margin_util == 0 and equity > 0:
+        margin_util = margin / equity * 100.0
 
-# ── Open positions ──
-positions = s.get('positions', [])
-pos_summary = s.get('position_summary', {})
-print()
-if not positions:
-    print('📊 Open Positions: 0')
-else:
-    total_pnl = pos_summary.get('total_pnl', 0)
-    total_swap = pos_summary.get('total_swap', 0)
-    total_comm = pos_summary.get('total_commission', 0)
-    total_net = pos_summary.get('total_net', 0)
-    net_s = '+' if total_net >= 0 else ''
-    print(f'📊 Open Positions ({len(positions)}) — Net: {net_s}{total_net:.2f}')
-    print()
-    for p in positions:
+    out.append(f'\U0001f4b0 {login} @ {server}')
+    out.append(f'   Balance {fmt_money(balance)} {currency} \u2502 Equity {fmt_money(equity)} \u2502 PnL {fmt_money(profit, True)}')
+    margin_status = '\u2705' if margin_level > 1000 else ('\u26a0\ufe0f' if margin_level > 200 else '\U0001f534')
+    out.append(f'   Margin {fmt_money(margin)} \u2502 Free {fmt_money(free_margin)} \u2502 Util {margin_util:.1f}% \u2502 Lvl {margin_level:.0f}% {margin_status}')
+    if peak > 0:
+        dd_amt = peak - equity
+        out.append(f'   Peak {fmt_money(peak)} \u2502 DD {dd:.2f}% ({fmt_money(dd_amt)} from peak)')
+
+
+def render_positions(out):
+    positions = s.get('positions', [])
+    summary = s.get('position_summary', {})
+    section_header(out, '\U0001f4ca', 'Open Positions', len(positions))
+
+    total_pnl = summary.get('total_pnl', 0)
+    total_swap = summary.get('total_swap', 0)
+    total_comm = summary.get('total_commission', 0)
+    total_net = summary.get('total_net', 0)
+
+    if total_pnl == 0 and total_net == 0 and positions:
+        total_pnl = sum(p.get('profit', 0) for p in positions)
+        total_swap = sum(p.get('swap', 0) for p in positions)
+        total_comm = sum(p.get('commission', 0) for p in positions)
+        total_net = total_pnl + total_swap + total_comm
+
+    out.append(f'   Total \u2502 PnL {fmt_money(total_pnl, True)} \u2502 Swap {fmt_money(total_swap, True)} \u2502 Comm {fmt_money(total_comm, True)} \u2502 Net {fmt_money(total_net, True)}')
+    section_end(out)
+
+    if not positions:
+        out.append('   No open positions')
+        section_end(out)
+        return
+
+    for i, p in enumerate(positions):
         pnl = p['profit']
         swap = p.get('swap', 0)
         comm = p.get('commission', 0)
         net = pnl + swap + comm
-        sign = '+' if pnl >= 0 else ''
-        net_s = '+' if net >= 0 else ''
         pnl_pct = p.get('pnl_pct', 0)
         sl = p.get('sl', 0)
         tp = p.get('tp', 0)
-        sl_s = f'SL={sl:.5f}' if sl > 0 else 'SL=—'
-        tp_s = f'TP={tp:.5f}' if tp > 0 else 'TP=—'
-        print(f'  #{p[\"ticket\"]} {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots')
-        print(f'    {p[\"open_price\"]:.5f} → {p[\"current_price\"]:.5f} | PnL: {sign}{pnl:.2f} | Net: {net_s}{net:.2f} ({pnl_pct:+.2f}%)')
-        print(f'    {sl_s} {tp_s} | Swap: {swap:.2f} | Comm: {comm:.2f} | Magic: {p[\"magic\"]}')
-    print()
-    print(f'  ── Total: PnL {total_pnl:+.2f} | Swap {total_swap:+.2f} | Comm {total_comm:+.2f} | Net {net_s}{total_net:.2f}')
+        risk = p.get('risk_pct', 0)
+        rr = p.get('rr_ratio', 0)
+        hold = p.get('hold_bars', 0)
+        open_time = p.get('open_time', '')
 
-# ── History summary ──
-hist = s.get('history_summary', {})
-print()
-count = hist.get('count', 0)
-wins = hist.get('wins', 0)
-losses = hist.get('losses', 0)
-wr = hist.get('win_rate', 0)
-hp = hist.get('total_pnl', 0)
-hs = hist.get('total_swap', 0)
-hc = hist.get('total_commission', 0)
-hn = hist.get('total_net', 0)
-hn_s = '+' if hn >= 0 else ''
-print(f'📋 History: {count} trades ({wins}W/{losses}L, {wr:.0f}% WR)')
-print(f'   PnL: {hp:+.2f} | Swap: {hs:+.2f} | Comm: {hc:+.2f} | Net: {hn_s}{hn:.2f}')
+        sl_s = f'{sl:.5f}' if sl > 0 else '\u2014'
+        tp_s = f'{tp:.5f}' if tp > 0 else '\u2014'
+        risk_s = f'{risk:.1f}%' if risk > 0 else '\u2014'
+        rr_s = f'{rr:.1f}' if rr > 0 else '\u2014'
+        hold_s = f'{hold}' if hold > 0 else '\u2014'
+        since_s = open_time if open_time else '\u2014'
+        # ponytail: clamp absurd pnl_pct from EA computation bug
+        pnl_pct_s = f'{pnl_pct:+.1f}%' if abs(pnl_pct) < 10000 else ''
 
-# ── Recent history deals (last 10) ──
-history = s.get('history', [])
-if history:
-    print()
-    print(f'  Last {min(10, len(history))} closed trades:')
-    for t in history[:10]:
-        net = t.get('net', t.get('profit', 0))
-        sign = '+' if t.get('profit', 0) >= 0 else ''
-        net_s = '+' if net >= 0 else ''
-        print(f'    #{t.get(\"ticket\",\"?\")} {t.get(\"symbol\",\"?\")} {t.get(\"lots\",0)} lots')
-        print(f'      {t.get(\"open_price\",0):.5f} → {t.get(\"close_price\",0):.5f} | Net: {net_s}{net:.2f} | Magic: {t.get(\"magic\",\"?\")}')
+        out.append(f'   {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots @ {p[\"open_price\"]:.5f}')
+        pnl_line = f'     PnL {fmt_money(pnl, True)}'
+        if pnl_pct_s:
+            pnl_line += f' ({pnl_pct_s})'
+        pnl_line += f' \u2502 Net {fmt_money(net, True)} \u2502 SL {sl_s} \u2502 TP {tp_s}'
+        out.append(pnl_line)
+        out.append(f'     Risk {risk_s} \u2502 R:R {rr_s} \u2502 Held {hold_s} bars \u2502 Since {since_s}')
+        if i < len(positions) - 1:
+            out.append('   \u00b7\u00b7\u00b7')
+    section_end(out)
 
-# ── Rolling stats ──
-rolling = s.get('rolling', {})
-if rolling:
-    print()
-    print('📈 Rolling PnL:')
+
+def render_history(out):
+    hist = s.get('history_summary', {})
+    count = hist.get('count', 0)
+    wins = hist.get('wins', 0)
+    losses = hist.get('losses', 0)
+    wr = hist.get('win_rate', 0)
+    hp = hist.get('total_pnl', 0)
+    hs = hist.get('total_swap', 0)
+    hc = hist.get('total_commission', 0)
+    hn = hist.get('total_net', 0)
+    avg_win = hist.get('avg_win', 0)
+    avg_loss = hist.get('avg_loss', 0)
+    pf = hist.get('profit_factor', 0)
+
+    section_header(out, '\U0001f4cb', 'Closed Trades', f'{count} trades, {wins}W/{losses}L, {wr:.0f}% WR')
+
+    if count > 0:
+        out.append(f'   Net {fmt_money(hn, True)} \u2502 PnL {fmt_money(hp, True)} \u2502 Swap {fmt_money(hs, True)} \u2502 Comm {fmt_money(hc, True)}')
+        out.append(f'   Avg Win {fmt_money(avg_win, True)} \u2502 Avg Loss {fmt_money(avg_loss, True)} \u2502 PF {pf:.2f}')
+    else:
+        out.append('   No closed trades in history window')
+
+    history = s.get('history', [])
+    if history:
+        show_n = min(10, len(history))
+        section_end(out)
+        out.append(f'   Last {show_n}:')
+        for t in history[:show_n]:
+            net = t.get('net', t.get('profit', 0))
+            out.append(f'     #{t.get(\"ticket\",\"?\")} {t.get(\"type\",\"?\")} {t.get(\"symbol\",\"?\")} {t.get(\"lots\",0)} lots \u2502 Net {fmt_money(net, True)} \u2502 {t.get(\"time\",\"?\")}')
+    section_end(out)
+
+
+def render_exposure(out):
+    positions = s.get('positions', [])
+    sym_data = defaultdict(lambda: {'lots': 0.0, 'pnl': 0.0, 'count': 0, 'swap': 0.0, 'comm': 0.0})
+    mag_data = defaultdict(lambda: {'lots': 0.0, 'pnl': 0.0, 'count': 0, 'swap': 0.0, 'comm': 0.0})
+
+    for p in positions:
+        sym = p.get('symbol', '?')
+        magic = str(p.get('magic', '?'))
+        lots = p.get('lots', 0)
+        pnl = p.get('profit', 0)
+        swap = p.get('swap', 0)
+        comm = p.get('commission', 0)
+
+        sym_data[sym]['lots'] += lots
+        sym_data[sym]['pnl'] += pnl
+        sym_data[sym]['swap'] += swap
+        sym_data[sym]['comm'] += comm
+        sym_data[sym]['count'] += 1
+
+        mag_data[magic]['lots'] += lots
+        mag_data[magic]['pnl'] += pnl
+        mag_data[magic]['swap'] += swap
+        mag_data[magic]['comm'] += comm
+        mag_data[magic]['count'] += 1
+
+    for item in s.get('symbol_exposure', []):
+        sym = item.get('symbol', '?')
+        if sym not in sym_data:
+            sym_data[sym] = {'lots': item.get('lots',0), 'pnl': item.get('pnl',0), 'count': item.get('count',0), 'swap': 0, 'comm': 0}
+
+    for item in s.get('strategy_performance', []):
+        magic = str(item.get('magic', '?'))
+        if magic not in mag_data:
+            mag_data[magic] = {'lots': item.get('lots',0), 'pnl': item.get('pnl',0), 'count': item.get('count',0), 'swap': 0, 'comm': 0}
+
+    section_header(out, '\U0001f3af', 'Exposure', f'{len(positions)} positions')
+
+    if not sym_data:
+        out.append('   No open positions')
+        section_end(out)
+        return
+
+    total_lots = sum(x['lots'] for x in sym_data.values())
+    total_pnl = sum(x['pnl'] for x in sym_data.values())
+    total_swap = sum(x['swap'] for x in sym_data.values())
+    total_comm = sum(x['comm'] for x in sym_data.values())
+    total_net = total_pnl + total_swap + total_comm
+
+    out.append(f'   Total \u2502 {total_lots:.2f} lots \u2502 PnL {fmt_money(total_pnl, True)} \u2502 Net {fmt_money(total_net, True)}')
+    section_end(out)
+
+    out.append('   By Symbol:')
+    for sym, d in sorted(sym_data.items(), key=lambda a: abs(a[1]['pnl']), reverse=True):
+        pnl = d['pnl']
+        net = pnl + d['swap'] + d['comm']
+        pct = d['lots'] / total_lots * 100 if total_lots > 0 else 0
+        out.append(f'     {sym:12s} {d[\"lots\"]:5.2f} lots ({pct:4.1f}%) \u2502 PnL {fmt_money(pnl, True)} \u2502 Net {fmt_money(net, True)}')
+
+    if mag_data:
+        section_end(out)
+        out.append('   By Strategy:')
+        for magic, d in sorted(mag_data.items(), key=lambda a: abs(a[1]['pnl']), reverse=True):
+            pnl = d['pnl']
+            net = pnl + d['swap'] + d['comm']
+            out.append(f'     {magic:>10s} \u2502 {d[\"lots\"]:5.2f} lots \u2502 PnL {fmt_money(pnl, True)} \u2502 Net {fmt_money(net, True)}')
+
+    section_end(out)
+    out.append('   Per-Position:')
+    for p in positions:
+        pnl = p.get('profit', 0)
+        swap = p.get('swap', 0)
+        comm = p.get('commission', 0)
+        net = pnl + swap + comm
+        magic = p.get('magic', '?')
+        out.append(f'     #{p[\"ticket\"]} {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots \u2502 PnL {fmt_money(pnl, True)} \u2502 Net {fmt_money(net, True)} \u2502 {magic}')
+    section_end(out)
+
+
+def render_drawdown(out):
+    balance = s.get('balance', 0)
+    equity = s.get('equity', 0)
+    peak = s.get('peak_equity', 0)
+    dd = s.get('drawdown_pct', 0)
+
+    if peak == 0:
+        peak = balance
+        dd = (peak - equity) / peak * 100.0 if peak > 0 else 0.0
+
+    section_header(out, '\U0001f4c9', 'Drawdown')
+    dd_amount = peak - equity
+    out.append(f'   Balance {fmt_money(balance)} \u2502 Equity {fmt_money(equity)} \u2502 Peak {fmt_money(peak)}')
+    out.append(f'   Drawdown {dd:.2f}% \u2502 {fmt_money(dd_amount)} from peak')
+
+    bar_len = min(int(dd / 100 * 40), 40) if peak > 0 else 0
+    bar = '\u2588' * bar_len + '\u2591' * (40 - bar_len)
+    out.append(f'   [{bar}] {dd:.1f}%')
+    section_end(out)
+
+    snapshots = s.get('equity_snapshots', [])
+    if snapshots:
+        pt = 'points' if len(snapshots) != 1 else 'point'
+        out.append(f'   Equity Curve ({len(snapshots)} {pt}):')
+        min_eq = min(x['equity'] for x in snapshots)
+        max_eq = max(x['equity'] for x in snapshots)
+        rng = max_eq - min_eq if max_eq != min_eq else 1
+        for x in snapshots:
+            eq = x['equity']
+            bar_len = int((eq - min_eq) / rng * 20)
+            bar = '\u2588' * bar_len + '\u2591' * (20 - bar_len)
+            out.append(f'   {x[\"time\"]} \u2502 {bar} {eq:.2f}')
+    else:
+        out.append('   No equity snapshots yet (EA collects hourly)')
+    section_end(out)
+
+
+def render_risk(out):
+    equity = s.get('equity', 0)
+    margin = s.get('margin', 0)
+    free_margin = s.get('free_margin', 0)
+    margin_level = s.get('margin_level', 0)
+    margin_util = s.get('margin_utilization', 0)
+
+    if margin_util == 0 and equity > 0:
+        margin_util = margin / equity * 100.0
+
+    section_header(out, '\u26a0\ufe0f', 'Risk')
+    status = '\u2705 Healthy' if margin_level > 1000 else ('\u26a0\ufe0f Warning' if margin_level > 200 else ('\U0001f7e0 Danger' if margin_level > 100 else '\U0001f534 CRITICAL'))
+    out.append(f'   Equity {fmt_money(equity)} \u2502 Margin {fmt_money(margin)} \u2502 Free {fmt_money(free_margin)}')
+    out.append(f'   Utilization {margin_util:.1f}% \u2502 Level {margin_level:.0f}% \u2502 {status}')
+    section_end(out)
+
+    positions = s.get('positions', [])
+    if positions:
+        out.append('   Per-Position Risk:')
+        for i, p in enumerate(positions):
+            risk = p.get('risk_pct', 0)
+            rr = p.get('rr_ratio', 0)
+            sl = p.get('sl', 0)
+            tp = p.get('tp', 0)
+            hold = p.get('hold_bars', 0)
+            cur_px = p.get('current_price', 0)
+
+            sl_dist = p.get('sl_dist', 0)
+            tp_dist = p.get('tp_dist', 0)
+            if sl_dist == 0 and sl > 0 and cur_px > 0:
+                sl_dist = abs(cur_px - sl)
+            if tp_dist == 0 and tp > 0 and cur_px > 0:
+                tp_dist = abs(tp - cur_px)
+            if rr == 0 and tp_dist > 0 and sl_dist > 0:
+                rr = tp_dist / sl_dist
+
+            if risk == 0 and sl > 0 and cur_px > 0 and equity > 0:
+                sl_dist_val = abs(cur_px - sl)
+                risk = (sl_dist_val * p.get('lots', 0)) / equity * 100.0 if equity > 0 else 0
+
+            sl_s = f'{sl_dist:.5f}' if sl > 0 else '\u2014'
+            tp_s = f'{tp_dist:.5f}' if tp > 0 else '\u2014'
+            risk_s = f'{risk:.2f}%' if risk > 0 else '\u2014'
+            rr_s = f'{rr:.1f}' if rr > 0 else '\u2014'
+            hold_s = f'{hold}' if hold > 0 else '\u2014'
+            pnl = p.get('profit', 0)
+
+            out.append(f'     {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots')
+            out.append(f'       Risk {risk_s} \u2502 R:R {rr_s} \u2502 SL {sl_s} \u2502 TP {tp_s} \u2502 Held {hold_s} bars')
+            out.append(f'       PnL {fmt_money(pnl, True)}')
+            if i < len(positions) - 1:
+                out.append('       \u00b7\u00b7\u00b7')
+    else:
+        out.append('   No open positions')
+    section_end(out)
+
+
+def render_orders(out):
+    orders = s.get('pending_orders', [])
+    section_header(out, '\U0001f4cb', 'Pending Orders', len(orders))
+    if not orders:
+        out.append('   None')
+    else:
+        for o in orders:
+            sl = o.get('sl', 0)
+            tp = o.get('tp', 0)
+            sl_s = f'{sl:.5f}' if sl > 0 else '\u2014'
+            tp_s = f'{tp:.5f}' if tp > 0 else '\u2014'
+            out.append(f'   #{o[\"ticket\"]} {o[\"type\"]} {o[\"symbol\"]} {o[\"lots\"]} lots @ {o[\"price\"]:.5f}')
+            out.append(f'     SL {sl_s} \u2502 TP {tp_s} \u2502 {o.get(\"time\",\"?\")}')
+    section_end(out)
+
+
+def render_equity(out):
+    render_drawdown(out)
+
+
+def render_rolling(out):
+    rolling = s.get('rolling', {})
+    section_header(out, '\U0001f4c8', 'Rolling PnL')
+
+    if not rolling:
+        out.append('   No rolling data yet')
+        section_end(out)
+        return
+
     for period, label in [('daily', 'Today'), ('weekly', 'Week'), ('monthly', 'Month')]:
         r = rolling.get(period, {})
         pnl = r.get('pnl', 0)
@@ -153,8 +409,63 @@ if rolling:
         w = r.get('wins', 0)
         l = r.get('losses', 0)
         wr = r.get('win_rate', 0)
-        sign = '+' if pnl >= 0 else ''
-        print(f'  {label:8s}: {sign}{pnl:+.2f} | {trades} trades ({w}W/{l}L, {wr:.0f}% WR)')
+        avg_win = r.get('avg_win', 0)
+        avg_loss = r.get('avg_loss', 0)
+
+        # Build W/L display
+        if trades == 0:
+            wl = 'no trades'
+        elif w == 0:
+            wl = f'{l}L'
+        elif l == 0:
+            wl = f'{w}W'
+        else:
+            wl = f'{w}W/{l}L'
+
+        # Build avg display
+        if trades > 0 and w > 0 and l > 0:
+            avg_s = f'avg {fmt_money(avg_win, True)} / {fmt_money(avg_loss)}'
+        elif trades > 0 and l > 0:
+            avg_s = f'avg loss {fmt_money(avg_loss)}'
+        elif trades > 0 and w > 0:
+            avg_s = f'avg win {fmt_money(avg_win, True)}'
+        else:
+            avg_s = ''
+
+        trade_s = f'{trades} trade' + ('s' if trades != 1 else '')
+        ROLL_INDENT = '                         '  # 25 spaces — aligns with main line │
+        out.append(f'   {label:8s} {fmt_money(pnl, True):>12s} \u2502 {trade_s} \u2502 {wl} \u2502 {wr:.0f}% WR')
+        if avg_s:
+            out.append(f'{ROLL_INDENT}\u2502 {avg_s}')
+    section_end(out)
+
+
+# ── Render ──
+SECTION_RENDERERS = {
+    'positions': render_positions,
+    'history': render_history,
+    'exposure': render_exposure,
+    'drawdown': render_drawdown,
+    'risk': render_risk,
+    'orders': render_orders,
+    'equity': render_equity,
+    'rolling': render_rolling,
+}
+
+out = []
+show_account(out)
+
+if SECTION == 'all':
+    for name in ['positions', 'history', 'exposure', 'drawdown', 'risk', 'orders', 'rolling']:
+        SECTION_RENDERERS[name](out)
+elif SECTION in SECTION_RENDERERS:
+    SECTION_RENDERERS[SECTION](out)
+else:
+    print(f'Unknown section: {SECTION}')
+    print('Sections: positions, history, exposure, drawdown, risk, orders, equity, rolling')
+    sys.exit(1)
+
+print('\n'.join(out))
 "
         ;;
 
@@ -166,7 +477,7 @@ import json, sys
 with open('$latest') as f:
     r = json.load(f)
 sev = r.get('severity', '?')
-icon = {'OK':'✅', 'WARNING':'⚠️', 'CRITICAL':'🔴'}.get(sev, '?')
+icon = {'OK':'\u2705', 'WARNING':'\u26a0\ufe0f', 'CRITICAL':'\U0001f534'}.get(sev, '?')
 ts = r.get('timestamp', '?')[:16]
 ch = r.get('charts', {})
 loaded = ch.get('loaded_count', ch.get('found_count', '?'))
@@ -174,7 +485,7 @@ expected = ch.get('expected_count', '?')
 print(f'{icon} {sev} | charts {loaded}/{expected} | last check {ts}')
 "
         else
-            echo "⚠️  No report yet — run: mt5ctl health"
+            echo "\u26a0\ufe0f  No report yet \u2014 run: mt5ctl health"
         fi
         ;;
 
@@ -183,7 +494,7 @@ print(f'{icon} {sev} | charts {loaded}/{expected} | last check {ts}')
         ;;
 
     charts)
-        echo "── Chart attach status ──"
+        echo "\u2500\u2500 Chart attach status \u2500\u2500"
         "${LOGCHECK}" --days 2 --json 2>/dev/null | python3 -c "
 import json, sys
 r = json.load(sys.stdin)
@@ -192,15 +503,15 @@ loaded = ch.get('loaded_count', ch.get('found_count', '?'))
 expected = ch.get('expected_count', '?')
 print(f'Loaded: {loaded}/{expected}')
 if ch.get('missing_magics'):
-    print(f'🔴 Missing: {ch[\"missing_magics\"]}')
+    print(f'\U0001f534 Missing: {ch[\"missing_magics\"]}')
 if ch.get('wrong_build_magics'):
-    print(f'🔴 Wrong build: {ch[\"wrong_build_magics\"]}')
+    print(f'\U0001f534 Wrong build: {ch[\"wrong_build_magics\"]}')
 print()
 for mg, info in sorted(ch.get('charts', {}).items()):
     warmup = info.get('warmup_bars')
-    warmup_str = f'warmup={warmup}' if warmup else '⚠️ NO warmup'
+    warmup_str = f'warmup={warmup}' if warmup else '\u26a0\ufe0f NO warmup'
     trees = info.get('trees')
-    trees_ok = '✅' if trees == 141 else ('🔴' if trees else '⚠️')
+    trees_ok = '\u2705' if trees == 141 else ('\U0001f534' if trees else '\u26a0\ufe0f')
     trees_str = f'{trees} trees' if trees else 'no banner'
     print(f'  {trees_ok} magic={mg} {info.get(\"symbol\",\"?\")},{info.get(\"tf\",\"?\")} {info.get(\"atom\",\"?\")} ({trees_str}, {warmup_str})')
 aux = ch.get('auxiliary_eas', {})
@@ -208,7 +519,7 @@ if aux:
     print()
     print(f'Auxiliary EAs ({len(aux)}):')
     for name, ainfo in sorted(aux.items()):
-        icon = '✅' if ainfo.get('state') == 'loaded' else '🔴'
+        icon = '\u2705' if ainfo.get('state') == 'loaded' else '\U0001f534'
         print(f'  {icon} {name} ({ainfo.get(\"symbol\",\"?\")},{ainfo.get(\"tf\",\"?\")}) state={ainfo.get(\"state\",\"?\")}')
 "
         ;;
@@ -237,21 +548,21 @@ mt5ctl — AD-12 MT5 control utility
 Usage: mt5ctl <command> [args]
 
 Commands:
-  snapshot              Comprehensive account snapshot (positions + history + rolling)
-  snapshot -json        Raw JSON output
-  status                Quick health (1-line)
-  health [days]         Full health check (default: 1 day)
-  charts                Chart attach status
-  alert test            Send a test alert
+  dashboard               Full dashboard — all dimensions
+  dashboard <section>     Zoom into one section (full depth)
+  dashboard -json         Raw JSON
+  status                  1-line health summary
+  health [days]           Full health check (default: 1 day)
+  charts                  Chart attach status
+  alert test              Send a test alert
+
+Sections: positions, history, exposure, drawdown, risk, orders, equity, rolling
 
 Examples:
-  mt5ctl snapshot
-  mt5ctl snapshot -json
-  mt5ctl status
-  mt5ctl health 3
-  mt5ctl charts
-
-Reports: $REPORT_DIR
+  mt5ctl dashboard            # everything
+  mt5ctl dashboard exposure   # full exposure breakdown
+  mt5ctl dashboard -json      # raw data
+  mt5ctl status               # quick health
 EOF
         ;;
 

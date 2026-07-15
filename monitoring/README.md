@@ -80,26 +80,45 @@ mt5ctl health
 # On the VPS:
 export PATH="$HOME/mt5-monitoring/bin:$PATH"
 
-mt5ctl status          # 1-line health
-mt5ctl pnl             # live account state
-mt5ctl trades today    # today's trades
-mt5ctl charts          # chart attach status
-mt5ctl summary weekly  # weekly summary
-mt5ctl alert test      # test email + Telegram
+mt5ctl status              # 1-line health
+mt5ctl dashboard           # full dashboard
+mt5ctl dashboard positions # open trades + totals
+mt5ctl dashboard history   # closed trades + stats
+mt5ctl dashboard exposure  # by symbol + strategy
+mt5ctl dashboard drawdown  # peak equity + drawdown
+mt5ctl dashboard risk      # margin + per-position R:R
+mt5ctl dashboard orders    # pending orders
+mt5ctl dashboard equity    # equity curve
+mt5ctl dashboard rolling   # daily/weekly/monthly PnL
+mt5ctl health              # full health check (default 2 days)
+mt5ctl health 7            # health check last 7 days
+mt5ctl charts              # chart attach status
+mt5ctl summary weekly      # weekly summary
+mt5ctl alert test          # test email + Telegram
 ```
 
 ## Telegram bot commands
 
 Send these to your bot in Telegram:
 
-- `/status` — Quick health (1-line)
-- `/health` — Full health check
-- `/pnl` — Current account state
-- `/trades today` — Recent trades (today/week/month)
+<b>Dashboard (unified view):</b>
+- `/dashboard` — Full dashboard (all dimensions)
+- `/positions` — Open trades + totals
+- `/history` — Closed trades + stats
+- `/exposure` — By symbol + strategy
+- `/drawdown` — Peak equity + drawdown
+- `/risk` — Margin + per-position R:R
+- `/orders` — Pending orders
+- `/equity` — Equity curve
+- `/rolling` — Daily/weekly/monthly PnL
+
+<b>System:</b>
+- `/status` — 1-line health check
+- `/health` — Full health report
 - `/charts` — Chart attach status
-- `/summary weekly` — Daily/weekly/monthly summary
-- `/alert test` — Send a test alert
-- `/help` — Show available commands
+- `/help` — Show this message
+
+All commands are clickable in Telegram's command menu.
 
 ## Layout
 
