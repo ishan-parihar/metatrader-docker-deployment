@@ -1,36 +1,164 @@
 #!/usr/bin/env bash
 # mt5ctl — AD-12 MT5 control utility for on-demand checks.
 #
-# Subcommands:
-#   status    — quick health check (1-line status)
-#   health    — full health check (same as logcheck)
-#   pnl       — current account state (balance, equity, open PnL, positions)
-#   trades    — recent trades (today / week / month)
-#   charts    — chart attach status (magics, trees, warmup)
-#   summary   — daily/weekly/monthly summary
-#   alert     — send a test alert
-#   help      — show this help
+# Commands:
+#   snapshot    — comprehensive account snapshot (positions + history + rolling)
+#   status      — quick health (1-line)
+#   health      — full health check (logcheck)
+#   charts      — chart attach status
+#   alert       — send test alert
+#   help        — show this help
 #
 # Usage:
+#   mt5ctl snapshot          # everything in one shot
+#   mt5ctl snapshot -json    # raw JSON output
 #   mt5ctl status
-#   mt5ctl pnl
-#   mt5ctl trades today
-#   mt5ctl summary weekly
-#   mt5ctl alert test
+#   mt5ctl health
+#   mt5ctl charts
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOGCHECK="${SCRIPT_DIR}/mt5_logcheck.sh"
-SUMMARY="${SCRIPT_DIR}/mt5_summary.py"
 ALERT="${SCRIPT_DIR}/mt5_alert.py"
 REPORT_DIR="/home/ishanp/mt5-deploy/logcheck/reports"
+
+SNAPSHOT_PATH="/config/.wine/drive_c/users/root/AppData/Roaming/MetaQuotes/Terminal/Common/Files/account_snapshot.json"
 
 cmd="${1:-help}"
 shift || true
 
+# Helper: read snapshot from docker
+_read_snapshot() {
+    docker exec mt5-terminal cat "$SNAPSHOT_PATH" 2>/dev/null | python3 -c "
+import json, sys
+raw = sys.stdin.buffer.read()
+if raw[:2] == b'\xff\xfe':
+    text = raw[2:].decode('utf-16-le', errors='replace')
+elif raw[:2] == b'\xfe\xff':
+    text = raw[2:].decode('utf-16-be', errors='replace')
+elif raw[:3] == b'\xef\xbb\xbf':
+    text = raw[3:].decode('utf-8', errors='replace')
+else:
+    text = raw.decode('utf-8', errors='replace')
+try:
+    print(json.dumps(json.loads(text), indent=2))
+except Exception as e:
+    print(f'ERROR: Cannot parse snapshot: {e}', file=sys.stderr)
+    sys.exit(1)
+"
+}
+
 case "$cmd" in
+    snapshot)
+        fmt="${1:-text}"
+        if [[ "$fmt" == "-json" || "$fmt" == "json" ]]; then
+            _read_snapshot
+            exit 0
+        fi
+
+        _read_snapshot | python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+
+# ── Account header ──
+login = s.get('login', '?')
+server = s.get('server', '?')
+balance = s.get('balance', 0)
+equity = s.get('equity', 0)
+currency = s.get('currency', '')
+profit = s.get('profit', 0)
+margin = s.get('margin', 0)
+free_margin = s.get('free_margin', 0)
+margin_level = s.get('margin_level', 0)
+leverage = s.get('leverage', 0)
+ts = s.get('ts', '?')
+
+net_sign = '+' if profit >= 0 else ''
+print(f'💰 Account: {login} @ {server}')
+print(f'   Balance:    {balance:.2f} {currency}')
+print(f'   Equity:     {equity:.2f}')
+print(f'   Open PnL:   {net_sign}{profit:.2f}')
+print(f'   Margin:     {margin:.2f} (free: {free_margin:.2f})')
+print(f'   Mgn Level:  {margin_level:.1f}% | Leverage: 1:{leverage}')
+print(f'   Updated:    {ts}')
+
+# ── Open positions ──
+positions = s.get('positions', [])
+pos_summary = s.get('position_summary', {})
+print()
+if not positions:
+    print('📊 Open Positions: 0')
+else:
+    total_pnl = pos_summary.get('total_pnl', 0)
+    total_swap = pos_summary.get('total_swap', 0)
+    total_comm = pos_summary.get('total_commission', 0)
+    total_net = pos_summary.get('total_net', 0)
+    net_s = '+' if total_net >= 0 else ''
+    print(f'📊 Open Positions ({len(positions)}) — Net: {net_s}{total_net:.2f}')
+    print()
+    for p in positions:
+        pnl = p['profit']
+        swap = p.get('swap', 0)
+        comm = p.get('commission', 0)
+        net = pnl + swap + comm
+        sign = '+' if pnl >= 0 else ''
+        net_s = '+' if net >= 0 else ''
+        pnl_pct = p.get('pnl_pct', 0)
+        sl = p.get('sl', 0)
+        tp = p.get('tp', 0)
+        sl_s = f'SL={sl:.5f}' if sl > 0 else 'SL=—'
+        tp_s = f'TP={tp:.5f}' if tp > 0 else 'TP=—'
+        print(f'  #{p[\"ticket\"]} {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots')
+        print(f'    {p[\"open_price\"]:.5f} → {p[\"current_price\"]:.5f} | PnL: {sign}{pnl:.2f} | Net: {net_s}{net:.2f} ({pnl_pct:+.2f}%)')
+        print(f'    {sl_s} {tp_s} | Swap: {swap:.2f} | Comm: {comm:.2f} | Magic: {p[\"magic\"]}')
+    print()
+    print(f'  ── Total: PnL {total_pnl:+.2f} | Swap {total_swap:+.2f} | Comm {total_comm:+.2f} | Net {net_s}{total_net:.2f}')
+
+# ── History summary ──
+hist = s.get('history_summary', {})
+print()
+count = hist.get('count', 0)
+wins = hist.get('wins', 0)
+losses = hist.get('losses', 0)
+wr = hist.get('win_rate', 0)
+hp = hist.get('total_pnl', 0)
+hs = hist.get('total_swap', 0)
+hc = hist.get('total_commission', 0)
+hn = hist.get('total_net', 0)
+hn_s = '+' if hn >= 0 else ''
+print(f'📋 History: {count} trades ({wins}W/{losses}L, {wr:.0f}% WR)')
+print(f'   PnL: {hp:+.2f} | Swap: {hs:+.2f} | Comm: {hc:+.2f} | Net: {hn_s}{hn:.2f}')
+
+# ── Recent history deals (last 10) ──
+history = s.get('history', [])
+if history:
+    print()
+    print(f'  Last {min(10, len(history))} closed trades:')
+    for t in history[:10]:
+        net = t.get('net', t.get('profit', 0))
+        sign = '+' if t.get('profit', 0) >= 0 else ''
+        net_s = '+' if net >= 0 else ''
+        print(f'    #{t.get(\"ticket\",\"?\")} {t.get(\"symbol\",\"?\")} {t.get(\"lots\",0)} lots')
+        print(f'      {t.get(\"open_price\",0):.5f} → {t.get(\"close_price\",0):.5f} | Net: {net_s}{net:.2f} | Magic: {t.get(\"magic\",\"?\")}')
+
+# ── Rolling stats ──
+rolling = s.get('rolling', {})
+if rolling:
+    print()
+    print('📈 Rolling PnL:')
+    for period, label in [('daily', 'Today'), ('weekly', 'Week'), ('monthly', 'Month')]:
+        r = rolling.get(period, {})
+        pnl = r.get('pnl', 0)
+        trades = r.get('trades', 0)
+        w = r.get('wins', 0)
+        l = r.get('losses', 0)
+        wr = r.get('win_rate', 0)
+        sign = '+' if pnl >= 0 else ''
+        print(f'  {label:8s}: {sign}{pnl:+.2f} | {trades} trades ({w}W/{l}L, {wr:.0f}% WR)')
+"
+        ;;
+
     status)
-        # Quick health: just the last logcheck report's severity
         latest="${REPORT_DIR}/latest.json"
         if [[ -f "$latest" ]]; then
             python3 -c "
@@ -54,77 +182,8 @@ print(f'{icon} {sev} | charts {loaded}/{expected} | last check {ts}')
         "${LOGCHECK}" --days "${1:-1}"
         ;;
 
-    pnl)
-        # Read the MQL5 account snapshot via docker exec
-        # FILE_COMMON writes to: /config/.wine/drive_c/users/root/AppData/Roaming/MetaQuotes/Terminal/Common/Files/
-        docker exec mt5-terminal cat \
-            "/config/.wine/drive_c/users/root/AppData/Roaming/MetaQuotes/Terminal/Common/Files/account_snapshot.json" \
-            2>/dev/null | python3 -c "
-import json, sys
-raw = sys.stdin.buffer.read()
-# MT5 writes text files as UTF-16 LE by default — handle BOM
-if raw[:2] == b'\xff\xfe':
-    text = raw[2:].decode('utf-16-le', errors='replace')
-elif raw[:2] == b'\xfe\xff':
-    text = raw[2:].decode('utf-16-be', errors='replace')
-elif raw[:3] == b'\xef\xbb\xbf':
-    text = raw[3:].decode('utf-8', errors='replace')
-else:
-    text = raw.decode('utf-8', errors='replace')
-try:
-    s = json.loads(text)
-except Exception as e:
-    print(f'❌ Cannot read snapshot: {e}')
-    print('   Is AccountSnapshot.mq5 attached to a chart?')
-    sys.exit(1)
-print(f'💰 Account: {s.get(\"login\",\"?\")} @ {s.get(\"server\",\"?\")}')
-print(f'   Balance:      {s.get(\"balance\",\"?\")} {s.get(\"currency\",\"\")}')
-print(f'   Equity:       {s.get(\"equity\",\"?\")}')
-print(f'   Open PnL:     {s.get(\"profit\",\"?\")}')
-print(f'   Margin:       {s.get(\"margin\",\"?\")} (free: {s.get(\"free_margin\",\"?\")})')
-print(f'   Margin level: {s.get(\"margin_level\",\"?\")}%')
-print(f'   Leverage:     {s.get(\"leverage\",\"?\")}')
-print(f'   Snapshot:     {s.get(\"ts\",\"?\")}')
-positions = s.get('positions', [])
-print(f'   Open positions: {len(positions)}')
-for p in positions:
-    pnl_str = f'+{p[\"profit\"]:.2f}' if p['profit'] >= 0 else f'{p[\"profit\"]:.2f}'
-    print(f'     #{p[\"ticket\"]} {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} @ {p[\"open_price\"]} → {p[\"current_price\"]} | PnL {pnl_str} | magic={p[\"magic\"]}')
-"
-        ;;
-
-    trades)
-        # Show trades from the last N days
-        days="${1:-today}"
-        case "$days" in
-            today) days=2 ;;  # 2 days to catch latest MQL5 log
-            week|weekly) days=7 ;;
-            month|monthly) days=30 ;;
-            *) days="$days" ;;
-        esac
-        echo "── Trades (last $days day(s)) ──"
-        "${LOGCHECK}" --days "$days" --json 2>/dev/null | python3 -c "
-import json, sys
-r = json.load(sys.stdin)
-t = r.get('trades', {})
-entries = t.get('entries', [])
-deals = t.get('deal_list', [])
-print(f'Entries: {len(entries)} | Deals: {len(deals)}')
-print()
-print('Entry signals:')
-for e in entries[-20:]:
-    print(f'  {e[\"time\"]} {e[\"source\"]} [{e[\"atom\"]}] dir={e[\"dir\"]} score={e[\"score\"]:.4f} lots={e[\"lots\"]} SL={e[\"sl\"]}')
-print()
-print('Deals:')
-for d in deals[-20:]:
-    print(f'  {d[\"time\"]} #{d[\"deal_id\"]} {d[\"side\"]} {d[\"lots\"]} {d[\"symbol\"]} @ {d[\"price\"]}')
-"
-        ;;
-
     charts)
         echo "── Chart attach status ──"
-        # Use 2-day window to ensure we catch the latest chart state
-        # (MT5 only writes MQL5 log on EA activity, so today's log may be stale)
         "${LOGCHECK}" --days 2 --json 2>/dev/null | python3 -c "
 import json, sys
 r = json.load(sys.stdin)
@@ -136,9 +195,6 @@ if ch.get('missing_magics'):
     print(f'🔴 Missing: {ch[\"missing_magics\"]}')
 if ch.get('wrong_build_magics'):
     print(f'🔴 Wrong build: {ch[\"wrong_build_magics\"]}')
-if ch.get('fatals'):
-    for f in ch['fatals']:
-        print(f'🔴 FATAL (RG-22): {f[\"chart_tf\"]} chart, set expects {f[\"expected_tf\"]} @ {f[\"time\"]}')
 print()
 for mg, info in sorted(ch.get('charts', {}).items()):
     warmup = info.get('warmup_bars')
@@ -147,8 +203,6 @@ for mg, info in sorted(ch.get('charts', {}).items()):
     trees_ok = '✅' if trees == 141 else ('🔴' if trees else '⚠️')
     trees_str = f'{trees} trees' if trees else 'no banner'
     print(f'  {trees_ok} magic={mg} {info.get(\"symbol\",\"?\")},{info.get(\"tf\",\"?\")} {info.get(\"atom\",\"?\")} ({trees_str}, {warmup_str})')
-
-# Show auxiliary EAs
 aux = ch.get('auxiliary_eas', {})
 if aux:
     print()
@@ -157,15 +211,6 @@ if aux:
         icon = '✅' if ainfo.get('state') == 'loaded' else '🔴'
         print(f'  {icon} {name} ({ainfo.get(\"symbol\",\"?\")},{ainfo.get(\"tf\",\"?\")}) state={ainfo.get(\"state\",\"?\")}')
 "
-        ;;
-
-    summary)
-        period="${1:-daily}"
-        case "$period" in
-            daily|weekly|monthly) ;;
-            *) echo "Usage: mt5ctl summary {daily|weekly|monthly}"; exit 1 ;;
-        esac
-        python3 "${SUMMARY}" "$period"
         ;;
 
     alert)
@@ -192,22 +237,21 @@ mt5ctl — AD-12 MT5 control utility
 Usage: mt5ctl <command> [args]
 
 Commands:
-  status              Quick health (1-line)
-  health [days]       Full health check (default: 1 day)
-  pnl                 Current account state (balance, equity, PnL, positions)
-  trades <period>     Recent trades (today|week|month|N)
-  charts              Chart attach status (magics, trees, warmup)
-  summary <period>    Daily/weekly/monthly summary
-  alert test          Send a test alert (email + Telegram)
+  snapshot              Comprehensive account snapshot (positions + history + rolling)
+  snapshot -json        Raw JSON output
+  status                Quick health (1-line)
+  health [days]         Full health check (default: 1 day)
+  charts                Chart attach status
+  alert test            Send a test alert
 
 Examples:
+  mt5ctl snapshot
+  mt5ctl snapshot -json
   mt5ctl status
-  mt5ctl pnl
-  mt5ctl trades today
-  mt5ctl summary weekly
-  mt5ctl alert test
+  mt5ctl health 3
+  mt5ctl charts
 
-Reports: /home/ishanp/mt5-deploy/logcheck/reports/
+Reports: $REPORT_DIR
 EOF
         ;;
 

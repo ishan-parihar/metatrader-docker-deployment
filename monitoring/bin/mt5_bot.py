@@ -1,27 +1,16 @@
 #!/usr/bin/env python3
 """
-mt5_bot.py — AD-12 Telegram bot handler.
+mt5_bot.py — AD-12 Telegram bot handler v2.
 
-Polls Telegram for incoming messages, routes slash commands to mt5ctl,
-and replies with the output. Runs as a long-lived systemd service.
-
-Commands (registered via setMyCommands):
-  /status    — quick health (1-line)
-  /health    — full health check
-  /pnl       — current account state
-  /trades    — recent trades (today/week/month)
-  /charts    — chart attach status
-  /summary   — daily/weekly/monthly summary
-  /alert     — send a test alert
-  /help      — show available commands
+Consolidated commands:
+  /status   — comprehensive snapshot (positions + history + rolling PnL)
+  /health   — full health check
+  /charts   — chart attach status
+  /help     — show commands
 
 Config: /home/ishanp/mt5-deploy/logcheck/config/alert.conf [telegram] section.
-
-Usage:
-  python3 mt5_bot.py              # start polling (runs forever)
-  python3 mt5_bot.py --once       # process pending updates once, then exit
-  python3 mt5_bot.py --offset N   # start from a specific update offset
 """
+
 import argparse
 import configparser
 import json
@@ -36,12 +25,10 @@ from datetime import datetime, timezone
 CONFIG_PATH = "/home/ishanp/mt5-deploy/logcheck/config/alert.conf"
 LOG_FILE = "/home/ishanp/mt5-deploy/logcheck/state/bot.log"
 MT5CTL = "/home/ishanp/mt5-deploy/logcheck/bin/mt5ctl"
-ALLOWED_CHAT_ID = None  # set from config; None = allow all
+ALLOWED_CHAT_ID = None
 
-# Telegram message length limit
 TG_MAX_LEN = 4096
 
-# ── Config ────────────────────────────────────────────────────────────────
 
 def load_config() -> dict:
     if not os.path.exists(CONFIG_PATH):
@@ -51,7 +38,7 @@ def load_config() -> dict:
     cfg = {}
     if cp.has_section("telegram"):
         cfg["bot_token"] = cp.get("telegram", "bot_token", fallback="")
-        cfg["chat_id"]   = cp.get("telegram", "chat_id",   fallback="")
+        cfg["chat_id"] = cp.get("telegram", "chat_id", fallback="")
     return cfg
 
 
@@ -70,7 +57,6 @@ def log(msg: str):
 
 def tg_api(token: str, method: str, params: dict | None = None,
            timeout: int = 30) -> dict:
-    """Call Telegram Bot API. Returns parsed JSON."""
     url = f"https://api.telegram.org/bot{token}/{method}"
     if params:
         data = urllib.parse.urlencode(params).encode()
@@ -83,14 +69,12 @@ def tg_api(token: str, method: str, params: dict | None = None,
 
 def send_message(token: str, chat_id: str, text: str,
                  parse_mode: str | None = None) -> bool:
-    """Send a message, splitting if > TG_MAX_LEN."""
     if not text:
         return False
     chunks = []
     if len(text) <= TG_MAX_LEN:
         chunks = [text]
     else:
-        # Split on newlines, keeping chunks under the limit
         current = ""
         for line in text.split("\n"):
             if len(current) + len(line) + 1 > TG_MAX_LEN:
@@ -121,7 +105,6 @@ def send_message(token: str, chat_id: str, text: str,
 
 def get_updates(token: str, offset: int | None = None,
                 timeout: int = 30) -> list[dict]:
-    """Long-poll for updates. Returns list of update dicts."""
     params = {"timeout": timeout, "allowed_updates": json.dumps(["message"])}
     if offset is not None:
         params["offset"] = offset
@@ -141,29 +124,23 @@ def get_updates(token: str, offset: int | None = None,
 HELP_TEXT = """\
 🤖 *AD-12 MT5 Bot*
 
-Available commands:
+/status  — Full snapshot (positions + history + rolling PnL)
+/health  — Health check
+/charts  — Chart attach status
+/help    — This message
 
-/status — Quick health (1-line)
-/health — Full health check
-/pnl — Current account state
-/trades — Recent trades (today/week/month)
-/charts — Chart attach status
-/summary — Daily/weekly/monthly summary
-/alert — Send a test alert
-/help — Show this help
+One command, everything you need."""
 
-Examples:
-  /status
-  /pnl
-  /trades today
-  /summary weekly
-
-All commands run live against the VPS MT5 terminal.
-"""
+# Alias map: /pnl, /open, /history, /snapshot all map to /status
+CMD_ALIASES = {
+    "pnl": "status",
+    "open": "status",
+    "history": "status",
+    "snapshot": "status",
+}
 
 
 def run_mt5ctl(args: list[str], timeout: int = 60) -> str:
-    """Run mt5ctl with given args, return stdout."""
     try:
         result = subprocess.run(
             [MT5CTL] + args,
@@ -182,47 +159,30 @@ def run_mt5ctl(args: list[str], timeout: int = 60) -> str:
 
 
 def handle_command(command: str, args: list[str]) -> str:
-    """Route a slash command to mt5ctl. Return reply text."""
     cmd = command.lower().lstrip("/")
 
-    if cmd == "help" or cmd == "start":
+    # Resolve aliases
+    cmd = CMD_ALIASES.get(cmd, cmd)
+
+    if cmd in ("help", "start"):
         return HELP_TEXT
 
     if cmd == "status":
-        return run_mt5ctl(["status"])
+        return run_mt5ctl(["snapshot"])
 
     if cmd == "health":
         days = args[0] if args and args[0].isdigit() else "1"
         return run_mt5ctl(["health", days])
 
-    if cmd == "pnl":
-        return run_mt5ctl(["pnl"])
-
-    if cmd == "trades":
-        period = args[0] if args else "today"
-        return run_mt5ctl(["trades", period])
-
     if cmd == "charts":
         return run_mt5ctl(["charts"])
 
-    if cmd == "summary":
-        period = args[0] if args else "daily"
-        if period not in ("daily", "weekly", "monthly"):
-            return f"❌ Unknown period: {period}. Use: daily|weekly|monthly"
-        return run_mt5ctl(["summary", period])
-
-    if cmd == "alert":
-        if args and args[0] == "test":
-            return run_mt5ctl(["alert", "test"])
-        return run_mt5ctl(["alert", "test"])
-
-    return f"❌ Unknown command: /{cmd}\n\nType /help for the list."
+    return f"❌ Unknown command: /{command}\n\nType /help for the list."
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────
 
-def process_updates(token: str, updates: list[dict]) -> int:
-    """Process a batch of updates. Returns next offset."""
+def process_updates(token: str, updates: list[dict]) -> int | None:
     max_update_id = 0
     for u in updates:
         uid = u.get("update_id", 0)
@@ -236,14 +196,11 @@ def process_updates(token: str, updates: list[dict]) -> int:
         if not text:
             continue
 
-        # Auth: only respond to the configured chat
         if ALLOWED_CHAT_ID and chat_id != ALLOWED_CHAT_ID:
-            log(f"ignoring message from chat {chat_id} (not in allowlist)")
+            log(f"ignoring message from chat {chat_id}")
             continue
 
-        # Parse command
         if not text.startswith("/"):
-            # Non-command: ignore (or could reply with help)
             continue
 
         parts = text.split(maxsplit=1)
@@ -259,7 +216,6 @@ def process_updates(token: str, updates: list[dict]) -> int:
             reply = f"❌ Handler error: {e}"
             log(f"handler error: {e}")
 
-        # Send reply (Markdown for /help, plain for everything else)
         parse_mode = "Markdown" if command.lower() in ("/help", "/start") else None
         send_message(token, chat_id, reply, parse_mode=parse_mode)
 
@@ -296,7 +252,6 @@ def main():
                 offset = new_offset
         if args.once:
             break
-        # Loop continues — getUpdates with timeout=30 will block until updates arrive
 
     log("bot exiting")
 
