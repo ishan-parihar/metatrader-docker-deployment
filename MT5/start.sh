@@ -169,7 +169,10 @@ rm -f "$MT5_DIR/Config/common.ini"
 # the HOST via ps — this leaked a real password once). The ini also bakes in
 # production settings: algo trading enabled + the MaxBars RAM cap.
 mkdir -p "$MT5_DIR/Config"
-AUTOSTART_INI="$MT5_DIR/Config/autostart.ini"
+# Keep the startup file at a space-free Windows path.  MT5's /config parser
+# treats the closing quote in a quoted Program Files path as part of the value
+# under Wine, silently ignoring the config.
+AUTOSTART_INI="$WINEPREFIX/drive_c/autostart.ini"
 {
     if [ -n "${MT5_BROKER_LOGIN}" ] && [ -n "${MT5_BROKER_PASSWORD}" ]; then
         echo "[Common]"
@@ -189,11 +192,11 @@ AUTOSTART_INI="$MT5_DIR/Config/autostart.ini"
 chmod 600 "$AUTOSTART_INI"
 
 # .bat launcher — cmd.exe treats @ as literal, avoiding start.exe misparse;
-# only the ini PATH appears in the process list now.
+# only the space-free ini PATH appears in the process list now.
 LAUNCHER="$MT5_DIR/start_mt5.bat"
 cat > "$LAUNCHER" <<BATEOF
 @echo off
-"C:\Program Files\MetaTrader 5\terminal64.exe" /portable "/config:C:\Program Files\MetaTrader 5\Config\autostart.ini"
+"C:\Program Files\MetaTrader 5\terminal64.exe" /portable /config:C:\autostart.ini
 BATEOF
 
 wine cmd.exe /c "$LAUNCHER" 2>&1 &
