@@ -37,12 +37,17 @@ echo "  $cnt_ex5 ex5 -> MQL5/Experts/ ; $cnt_set set -> MQL5/Presets/"
 
 echo "[3/3] Container pickup..."
 if [ "${2:-}" = "--restart" ]; then
-    docker restart mt5-terminal
-    echo "  mt5-terminal restarted (charts + profile persist in the volume)"
+    echo "  WARNING: --restart flag used. This kills live EAs on charts!"
+    echo "  Per project constraint C4: NEVER restart container for EA updates."
+    echo "  Use manual re-attach via noVNC instead:"
+    echo "    1. Right-click chart → Expert Advisors → Remove"
+    echo "    2. Drag AccountSnapshot from Navigator → Experts onto chart"
+    echo "    3. Confirm '[AccountSnapshot] v4.02 attached' in Experts log"
+    # docker restart mt5-terminal  # DISABLED per C4
+    echo "  (docker restart skipped — re-attach EA manually via noVNC)"
 else
-    echo "  Files are live via the bind mount. Restart the terminal (or"
-    echo "  refresh the Navigator) so MT5 reloads the EA binary:"
-    echo "    docker restart mt5-terminal"
+    echo "  Files are live via the bind mount."
+    echo "  To activate new EA: re-attach manually via noVNC (see above)"
 fi
 echo "DONE. Verify in each chart's Experts journal that the EA banner shows"
 echo "the expected model (e.g. 'MetaSystemV9 (141 trees)') before trusting."

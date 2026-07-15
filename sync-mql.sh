@@ -34,19 +34,14 @@ sync_terminal() {
         sleep 5
     fi
 
-    log "Restarting ${name} terminal to pick up changes..."
-    cd "$BASE_DIR/$dir"
-    docker compose restart
-    cd "$BASE_DIR"
-
-    sleep 10
-
-    if docker ps --format '{{.Names}}' | grep -q "^${container}$"; then
-        log "${name} terminal restarted successfully"
-    else
-        err "${name} terminal failed to start"
-        return 1
-    fi
+    log "Syncing ${name} MQL files (bind mount is live — no restart needed)..."
+    echo "  Files in $BASE_DIR/$dir/mql* are bind-mounted into the container."
+    echo "  For EA updates: copy .ex5 to MQL5/Experts/ then re-attach via noVNC."
+    echo "  For indicator/script updates: refresh Navigator in MT5."
+    echo "  ONLY restart container for config changes (servers.dat, common.ini)."
+    # docker compose restart  # DISABLED per C4 — kills live EAs
+    log "${name} terminal NOT restarted (bind mount picks up file changes)."
+    log "Re-attach EAs manually via noVNC if you updated .ex5 files."
 }
 
 show_status() {
