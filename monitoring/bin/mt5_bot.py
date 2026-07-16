@@ -73,35 +73,76 @@ def send_message(token: str, chat_id: str, text: str,
     if not text:
         return False
     
+    def split_by_sections(text: str, max_len: int) -> list[str]:
+        """Split HTML text by logical sections (<b>── headers), keeping each section intact."""
+        if len(text) <= max_len:
+            return [text]
+        
+        # Split by section headers (<b>──...)
+        parts = []
+        current = ""
+        in_pre = False
+        
+        for line in text.split('\n'):
+            is_section_header = line.strip().startswith('<b>') and '──' in line
+            
+            if is_section_header and current and not in_pre:
+                # Start new section - check if adding it would exceed limit
+                if len(current) + len(line) + 1 > max_len:
+                    # Current section is full, push it and start new
+                    parts.append(current)
+                    current = line
+                else:
+                    current += '\n' + line
+            else:
+                if not current:
+                    current = line
+                else:
+                    current += '\n' + line
+            
+            # Track if we're inside a <pre> block
+            if '<pre>' in line:
+                in_pre = True
+            if '</pre>' in line:
+                in_pre = False
+        
+        if current:
+            parts.append(current)
+        
+        # If any part is still too large, fall back to HTML-aware splitting
+        final_chunks = []
+        for part in parts:
+            if len(part) <= max_len:
+                final_chunks.append(part)
+            else:
+                final_chunks.extend(split_html(part, max_len))
+        
+        return final_chunks
+    
     def split_html(text: str, max_len: int) -> list[str]:
-        """Split HTML text into valid chunks, preserving tag structure."""
+        """Fallback: Split HTML text into valid chunks, preserving tag structure."""
         if len(text) <= max_len:
             return [text]
         
         chunks = []
         current = ""
-        tag_stack = []  # track open tags
+        tag_stack = []
         
         i = 0
         while i < len(text):
             char = text[i]
             
-            # Check for tag start
             if char == '<' and i + 1 < len(text):
-                # Find end of tag
                 j = text.find('>', i)
                 if j != -1:
                     tag = text[i:j+1]
                     is_closing = tag.startswith('</')
                     tag_name = tag[2:-1].split()[0] if is_closing else tag[1:-1].split()[0]
                     
-                    # Check if adding this tag would exceed max_len
                     if len(current) + len(tag) > max_len and current:
-                        # Close all open tags
                         for t in reversed(tag_stack):
                             current += f'</{t}>'
                         chunks.append(current)
-                        # Reopen tags in new chunk
                         current = ""
                         for t in tag_stack:
                             current += f'<{t}>'
@@ -115,13 +156,10 @@ def send_message(token: str, chat_id: str, text: str,
                     i = j + 1
                     continue
             
-            # Regular character
             if len(current) + 1 > max_len and current:
-                # Close tags before splitting
                 for t in reversed(tag_stack):
                     current += f'</{t}>'
                 chunks.append(current)
-                # Reopen tags
                 current = ""
                 for t in tag_stack:
                     current += f'<{t}>'
@@ -134,7 +172,7 @@ def send_message(token: str, chat_id: str, text: str,
         
         return chunks
     
-    chunks = split_html(text, TG_MAX_LEN)
+    chunks = split_by_sections(text, TG_MAX_LEN)
     
     ok = True
     for i, chunk in enumerate(chunks):
