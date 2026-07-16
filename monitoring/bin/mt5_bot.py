@@ -28,7 +28,7 @@ LOG_FILE = "/home/ishanp/mt5-deploy/logcheck/state/bot.log"
 MT5CTL = "/home/ishanp/mt5-deploy/logcheck/bin/mt5ctl"
 ALLOWED_CHAT_ID = None
 
-TG_MAX_LEN = 4096
+TG_MAX_LEN = 4000  # leave room for [X/Y] prefix
 
 
 def load_config() -> dict:
@@ -72,21 +72,70 @@ def send_message(token: str, chat_id: str, text: str,
                  parse_mode: str | None = None) -> bool:
     if not text:
         return False
-    chunks = []
-    if len(text) <= TG_MAX_LEN:
-        chunks = [text]
-    else:
+    
+    def split_html(text: str, max_len: int) -> list[str]:
+        """Split HTML text into valid chunks, preserving tag structure."""
+        if len(text) <= max_len:
+            return [text]
+        
+        chunks = []
         current = ""
-        for line in text.split("\n"):
-            if len(current) + len(line) + 1 > TG_MAX_LEN:
-                if current:
-                    chunks.append(current)
-                current = line
-            else:
-                current = current + "\n" + line if current else line
+        tag_stack = []  # track open tags
+        
+        i = 0
+        while i < len(text):
+            char = text[i]
+            
+            # Check for tag start
+            if char == '<' and i + 1 < len(text):
+                # Find end of tag
+                j = text.find('>', i)
+                if j != -1:
+                    tag = text[i:j+1]
+                    is_closing = tag.startswith('</')
+                    tag_name = tag[2:-1].split()[0] if is_closing else tag[1:-1].split()[0]
+                    
+                    # Check if adding this tag would exceed max_len
+                    if len(current) + len(tag) > max_len and current:
+                        # Close all open tags
+                        for t in reversed(tag_stack):
+                            current += f'</{t}>'
+                        chunks.append(current)
+                        # Reopen tags in new chunk
+                        current = ""
+                        for t in tag_stack:
+                            current += f'<{t}>'
+                    
+                    current += tag
+                    if not is_closing and not tag.endswith('/>'):
+                        tag_stack.append(tag_name)
+                    elif is_closing and tag_stack and tag_stack[-1] == tag_name:
+                        tag_stack.pop()
+                    
+                    i = j + 1
+                    continue
+            
+            # Regular character
+            if len(current) + 1 > max_len and current:
+                # Close tags before splitting
+                for t in reversed(tag_stack):
+                    current += f'</{t}>'
+                chunks.append(current)
+                # Reopen tags
+                current = ""
+                for t in tag_stack:
+                    current += f'<{t}>'
+            
+            current += char
+            i += 1
+        
         if current:
             chunks.append(current)
-
+        
+        return chunks
+    
+    chunks = split_html(text, TG_MAX_LEN)
+    
     ok = True
     for i, chunk in enumerate(chunks):
         prefix = f"[{i+1}/{len(chunks)}]\n" if len(chunks) > 1 else ""
