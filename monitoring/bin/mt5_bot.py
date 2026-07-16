@@ -74,53 +74,82 @@ def send_message(token: str, chat_id: str, text: str,
         return False
     
     def split_by_sections(text: str, max_len: int) -> list[str]:
-        """Split HTML text by logical sections (<b>── headers), keeping each section intact."""
+        """Split HTML text by section headers, keeping each section whole.
+        Greedily packs sections into chunks without splitting any section."""
         if len(text) <= max_len:
             return [text]
         
-        # Split by section headers (<b>──...)
-        parts = []
-        current = ""
+        # Parse into (section_header, section_content) pairs
+        lines = text.split('\n')
+        sections = []
+        current_header = None
+        current_content = []
         in_pre = False
         
-        for line in text.split('\n'):
-            is_section_header = line.strip().startswith('<b>') and '──' in line
+        for line in lines:
+            is_section_header = line.strip().startswith('<b>') and ('\u2500\u2500' in line or '💰' in line)
             
-            if is_section_header and current and not in_pre:
-                # Start new section - check if adding it would exceed limit
-                if len(current) + len(line) + 1 > max_len:
-                    # Current section is full, push it and start new
-                    parts.append(current)
-                    current = line
-                else:
-                    current += '\n' + line
-            else:
-                if not current:
-                    current = line
-                else:
-                    current += '\n' + line
-            
-            # Track if we're inside a <pre> block
-            if '<pre>' in line:
-                in_pre = True
-            if '</pre>' in line:
+            if is_section_header and current_header is not None:
+                # Save previous section
+                sections.append((current_header, '\n'.join(current_content)))
+                current_header = line
+                current_content = []
                 in_pre = False
-        
-        if current:
-            parts.append(current)
-        
-        # If any part is still too large, fall back to HTML-aware splitting
-        final_chunks = []
-        for part in parts:
-            if len(part) <= max_len:
-                final_chunks.append(part)
+            elif is_section_header and current_header is None:
+                current_header = line
+                current_content = []
+                in_pre = False
             else:
-                final_chunks.extend(split_html(part, max_len))
+                current_content.append(line)
+                if '<pre>' in line:
+                    in_pre = True
+                if '</pre>' in line:
+                    in_pre = False
         
-        return final_chunks
+        if current_header is not None:
+            sections.append((current_header, '\n'.join(current_content)))
+        
+        # Now pack sections into chunks (greedy, keep sections whole)
+        chunks = []
+        current_chunk = ""
+        current_chunk_sections = []
+        
+        for header, content in sections:
+            section_text = header + '\n' + content
+            section_len = len(section_text)
+            
+            # If section itself > max_len, we must split it (rare, but handle)
+            if section_len > max_len:
+                # Push current chunk first
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = ""
+                    current_chunk_sections = []
+                # Split this oversized section using fallback
+                chunks.extend(split_html(section_text, max_len))
+                continue
+            
+            # Would adding this section exceed limit?
+            if current_chunk and len(current_chunk) + 1 + section_len > max_len:
+                # Current chunk is full - push it
+                chunks.append(current_chunk)
+                current_chunk = section_text
+                current_chunk_sections = [header]
+            else:
+                # Add to current chunk
+                if current_chunk:
+                    current_chunk += '\n' + section_text
+                else:
+                    current_chunk = section_text
+                current_chunk_sections.append(header)
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+        
+        return chunks
     
     def split_html(text: str, max_len: int) -> list[str]:
-        """Fallback: Split HTML text into valid chunks, preserving tag structure."""
+        """Fallback: character-based split preserving tag structure."""
         if len(text) <= max_len:
             return [text]
         
