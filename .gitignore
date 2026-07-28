@@ -1,31 +1,11 @@
-# Binaries (user-provided)
-MT4/mt4-bin/
-MT5/mt5-bin/
+# ContextY
+.contexty/
 
-# MQL files (confidential EAs, scripts, indicators, presets)
-MT4/mql4/**/*.ex4
-MT4/mql4/**/*.set
-MT5/mql5/**/*.ex5
-MT5/mql5/**/*.set
+# CortexKit
+.cortexkit/
 
-# Environment files (contain credentials)
-MT4/.env
-MT5/.env
+# Hive
+.hive/
 
-# Config volumes
-MT4/config/
-MT5/config/
-
-# Docker volumes
-*.log
-
-# Monitoring stack — alert config contains secrets (SMTP password, Telegram bot token)
-monitoring/config/alert.conf
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
+# MemSearch
+.memsearch/
