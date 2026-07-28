@@ -1,0 +1,20 @@
+# AD-12 MT5 Alert Configuration
+# File perms: 0600 (contains secrets)
+# Location: /home/ishanp/mt5-deploy/logcheck/config/alert.conf
+# Template version - copy to alert.conf and fill in actual values
+
+[email]
+to = your_email@example.com
+from = your_email@example.com
+subject_prefix = [AD-12]
+
+; SMTP config (used on VPS where gog isn't installed)
+; App password: https://myaccount.google.com/apppasswords
+smtp_host = smtp.gmail.com
+smtp_port = 587
+smtp_user = your_email@example.com
+smtp_password = your_app_password
+
+[telegram]
+bot_token = YOUR_BOT_TOKEN_HERE
+chat_id = YOUR_CHAT_ID_HERE

@@ -1,11 +1,11 @@
 [Unit]
 Description=MT5 Monitoring Weekly Log Check
-Documentation=file:///home/%USER/mt5-monitoring/README.md
+Documentation=file:///home/ishanp/mt5-deploy/logcheck/README.md
 
 [Service]
 Type=oneshot
-User=%USER
-WorkingDirectory=%HOME/mt5-monitoring
-ExecStart=%HOME/mt5-monitoring/bin/mt5_logcheck.sh --days 7
-StandardOutput=append:%HOME/mt5-monitoring/state/logcheck.log
-StandardError=append:%HOME/mt5-monitoring/state/logcheck.log
+User=ishanp
+WorkingDirectory=/home/ishanp/mt5-deploy/logcheck
+ExecStart=/home/ishanp/mt5-deploy/logcheck/bin/mt5_logcheck.sh --days 7
+StandardOutput=append:/home/ishanp/mt5-deploy/logcheck/state/logcheck.log
+StandardError=append:/home/ishanp/mt5-deploy/logcheck/state/logcheck.log

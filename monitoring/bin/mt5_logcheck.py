@@ -58,7 +58,7 @@ EXPECTED_AUX_EAS = {
 # RG-22: wrong-TF chart attach (MQL5 log)
 FATAL_RG22_RE = re.compile(r"FATAL\s*\(RG-22\):\s*chart is (\w+),\s*set expects (\w+)")
 
-# EA banner (MQL5 log): === MetaSystemV9 (141 trees) magic=99210x thr=... box=...h ===
+# EA banner (MQL5 log): === MetaSystemV9 (231 trees) magic=99210x thr=... box=...h ===
 BANNER_RE = re.compile(
     r"=== MetaSystemV9 \((\d+) trees\) magic=(\d+) thr=([-\d.]+) box=(\d+)h ==="
 )
@@ -225,14 +225,14 @@ def check_broker_connection(terminal_entries: list[dict]) -> dict:
 
 def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict:
     """
-    Verify all 8 expected charts are loaded with correct magics and 141 trees.
+    Verify all 8 expected charts are loaded with correct magics and 231 trees.
 
     Strategy:
     1. Use TERMINAL LOG "expert loaded" events as the PRIMARY signal for chart
        attach status. These fire every time an EA loads, regardless of whether
        it does any Print/trade activity. A chart is "loaded" if its last event
        is a load (not a remove/init-fail).
-    2. Cross-reference with MQL5 LOG for banner details (141 trees, thr, box)
+    2. Cross-reference with MQL5 LOG for banner details (231 trees, thr, box)
        and warmup status. These are supplementary — a chart can be loaded
        without having emitted a banner yet (e.g. just attached, not yet run).
     3. Track auxiliary EAs (AccountSnapshot) separately — they're expected
@@ -270,7 +270,7 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict
             })
 
     # ── Step 2: Parse MQL5 log for banner/warmup details ──
-    # Banner: === MetaSystemV9 (141 trees) magic=99210x thr=... box=...h ===
+    # Banner: === MetaSystemV9 (231 trees) magic=99210x thr=... box=...h ===
     # The banner's magic number is the authoritative link to EXPECTED_CHARTS.
     banner_by_magic: dict[int, dict] = {}  # magic → {trees, thr, box, time, sym, tf}
     warmup_by_magic: dict[int, int] = {}  # magic → bars
@@ -388,7 +388,7 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict
     missing = expected - loaded_magics
     wrong_build = [
         mg for mg in loaded_magics
-        if banner_by_magic.get(mg, {}).get("trees") not in (None, 141)
+        if banner_by_magic.get(mg, {}).get("trees") not in (None, 231)
     ]
 
     # Filter stale init failures: stale if a later "loaded" event exists for
@@ -574,7 +574,7 @@ def format_report(report: dict) -> str:
     if ch["missing_magics"]:
         lines.append(f"   🔴 Missing magics: {ch['missing_magics']}")
     if ch["wrong_build_magics"]:
-        lines.append(f"   🔴 Wrong build (not 141 trees): {ch['wrong_build_magics']}")
+        lines.append(f"   🔴 Wrong build (not 231 trees): {ch['wrong_build_magics']}")
     if ch["fatals"]:
         for f in ch["fatals"]:
             lines.append(f"   🔴 FATAL (RG-22): {f['chart_tf']} chart, set expects {f['expected_tf']} @ {f['time']}")

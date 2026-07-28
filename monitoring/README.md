@@ -23,7 +23,7 @@ MetaTrader 5 deployment using this repo's Docker stack.
 | `terminal64.exe` process alive | `docker exec pgrep` | CRITICAL if dead |
 | Broker connection (last `authorized on`) | terminal log | CRITICAL if missing |
 | All expected charts loaded with correct magics | terminal log + MQL5 log | CRITICAL if missing |
-| 141-tree build confirmation per chart | MQL5 banner | CRITICAL if wrong |
+| 231-tree build confirmation per chart | MQL5 banner | CRITICAL if wrong |
 | Warmup completed per chart | MQL5 log | WARNING if missing |
 | No active `FATAL (RG-22)` errors | MQL5 log | CRITICAL if present |
 | Trade count (entries + deals) | both logs | INFO |
@@ -38,7 +38,7 @@ MetaTrader 5 deployment using this repo's Docker stack.
 
 ```bash
 cd monitoring
-cp config/alert.conf.example config/alert.conf
+cp config/alert.conf.template config/alert.conf
 nano config/alert.conf
 chmod 600 config/alert.conf
 ```
@@ -54,7 +54,7 @@ Fill in:
 ```
 
 This will:
-- Copy all scripts to `~/mt5-monitoring/bin/`
+- Copy all scripts to `~/mt5-deploy/logcheck/bin/`
 - Install systemd units to `/etc/systemd/system/`
 - Enable and start all timers + the bot service
 
@@ -68,7 +68,7 @@ In MT5 (via noVNC):
 ### 4. Verify
 
 ```bash
-export PATH="$HOME/mt5-monitoring/bin:$PATH"
+export PATH="$HOME/mt5-deploy/logcheck/bin:$PATH"
 mt5ctl status
 mt5ctl pnl
 mt5ctl health
@@ -78,7 +78,7 @@ mt5ctl health
 
 ```bash
 # On the VPS:
-export PATH="$HOME/mt5-monitoring/bin:$PATH"
+export PATH="$HOME/mt5-deploy/logcheck/bin:$PATH"
 
 mt5ctl status              # 1-line health
 mt5ctl dashboard           # full dashboard
@@ -123,18 +123,21 @@ All commands are clickable in Telegram's command menu.
 ## Layout
 
 ```
-mt5-monitoring/
+mt5-deploy/logcheck/
 ├── bin/
 │   ├── mt5_logcheck.py        # core: parses logs, runs checks
 │   ├── mt5_logcheck.sh        # bash wrapper (called by systemd)
 │   ├── mt5_alert.py           # email + Telegram dispatcher
 │   ├── mt5_summary.py         # daily/weekly/monthly summaries
 │   ├── mt5_bot.py              # Telegram bot polling handler
-│   └── mt5ctl                  # on-demand command interface
+│   ├── mt5ctl                  # on-demand command interface
+│   ├── AccountSnapshot.mq5    # MQL5 EA — dumps account state to JSON
+│   └── README.md              # this file
 ├── state/
 │   ├── logcheck.log           # append-only run log
 │   ├── alert.log              # alert send log
-│   └── bot.log                # bot activity log
+│   ├── bot.log                # bot activity log
+│   └── account.json           # cached account snapshot
 ├── reports/
 │   ├── logcheck_*.json        # health check reports
 │   ├── logcheck_*.txt         # human-readable
@@ -191,3 +194,4 @@ mt5ctl health 7    # last 7 days
 - `MT5/mql5/Experts/AccountSnapshot.mq5` — the equity feed EA
 - `../deploy-ea-bundle.sh` — deploys EA bundles to the MT5 container
 - `../README.md` — main repo documentation
+- `../../QuantFin-R&D/docs/architecture/ad12-operations-manual.md` — AD-12 operations manual

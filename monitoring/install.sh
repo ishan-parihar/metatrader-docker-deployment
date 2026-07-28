@@ -3,7 +3,7 @@
 # install.sh — One-shot installer for the MT5 monitoring stack
 # ============================================================================
 # Deploys:
-#   ~/mt5-monitoring/
+#   ~/mt5-deploy/logcheck/
 #     ├── bin/          (all scripts)
 #     ├── state/        (logs)
 #     └── reports/      (health check reports)
@@ -20,13 +20,13 @@
 #   - python3 (for the scripts)
 #   - systemd (for the timers)
 #   - alert.conf already configured at monitoring/config/alert.conf
-#     (copy from alert.conf.example and fill in credentials)
+#     (copy from alert.conf.template and fill in credentials)
 # ============================================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-INSTALL_DIR="${HOME}/mt5-monitoring"
+INSTALL_DIR="${HOME}/mt5-deploy/logcheck"
 USER_NAME="$(whoami)"
 
 echo "╔══════════════════════════════════════════════════════════╗"
@@ -39,7 +39,7 @@ echo "╚═══════════════════════�
 # ── 1. Create install directory ────────────────────────────────────────────
 echo ""
 echo "[1/5] Creating install directory..."
-mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/state" "${INSTALL_DIR}/reports"
+mkdir -p "${INSTALL_DIR}/bin" "${INSTALL_DIR}/state" "${INSTALL_DIR}/reports" "${INSTALL_DIR}/config"
 
 # ── 2. Copy scripts ──────────────────────────────────────────────────────
 echo "[2/5] Copying scripts..."
@@ -57,7 +57,7 @@ if [ -f "${SCRIPT_DIR}/config/alert.conf" ]; then
 elif [ -f "${INSTALL_DIR}/config/alert.conf" ]; then
     echo "  Using existing alert.conf at ${INSTALL_DIR}/config/alert.conf"
 else
-    cp -f "${SCRIPT_DIR}/config/alert.conf.example" "${INSTALL_DIR}/config/alert.conf"
+    cp -f "${SCRIPT_DIR}/config/alert.conf.template" "${INSTALL_DIR}/config/alert.conf"
     chmod 600 "${INSTALL_DIR}/config/alert.conf"
     echo "  ⚠️  Created alert.conf from template — EDIT IT before enabling alerts!"
     echo "     ${INSTALL_DIR}/config/alert.conf"
@@ -81,9 +81,8 @@ else
     if [ "${SUDO_OK:-true}" != "false" ]; then
         for unit_file in "${SCRIPT_DIR}/systemd/"*.service "${SCRIPT_DIR}/systemd/"*.timer; do
             unit_name="$(basename "$unit_file")"
-            # Substitute %USER and %HOME
-            sed -e "s|%USER|${USER_NAME}|g" -e "s|%HOME|${HOME}|g" \
-                "$unit_file" | sudo tee "/etc/systemd/system/${unit_name}" > /dev/null
+            # No substitution needed - systemd files have hardcoded paths
+            sudo cp "$unit_file" "/etc/systemd/system/${unit_name}"
             echo "  installed /etc/systemd/system/${unit_name}"
         done
 
@@ -116,7 +115,7 @@ echo "╔═══════════════════════�
 echo "║  Installation complete!                                  ║"
 echo "║                                                          ║"
 echo "║  Quick start:                                           ║"
-echo "║    export PATH=\"\$HOME/mt5-monitoring/bin:\$PATH\"        ║"
+echo "║    export PATH=\"\$HOME/mt5-deploy/logcheck/bin:\$PATH\"   ║"
 echo "║    mt5ctl status              # 1-line health           ║"
 echo "║    mt5ctl dashboard           # full dashboard          ║"
 echo "║    mt5ctl dashboard drawdown  # peak equity + drawdown  ║"
