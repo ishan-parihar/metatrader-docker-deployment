@@ -58,9 +58,9 @@ EXPECTED_AUX_EAS = {
 # RG-22: wrong-TF chart attach (MQL5 log)
 FATAL_RG22_RE = re.compile(r"FATAL\s*\(RG-22\):\s*chart is (\w+),\s*set expects (\w+)")
 
-# EA banner (MQL5 log): === MetaSystemV9 (231 trees) magic=99210x thr=... box=...h ===
+# EA banner (MQL5 log): === MetaSystemV9 (231 trees) magic=99210x tag=... thr=... box=...h ===
 BANNER_RE = re.compile(
-    r"=== MetaSystemV9 \((\d+) trees\) magic=(\d+) thr=([-\d.]+) box=(\d+)h ==="
+    r"=== MetaSystemV9 \((\d+) trees\) magic=(\d+) tag=\S+ thr=([-\d.]+) box=(\d+)h ==="
 )
 
 # Warmup line (MQL5 log)
