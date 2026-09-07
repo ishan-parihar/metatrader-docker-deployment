@@ -109,6 +109,13 @@ To test: `mt5ctl alert test`
 Check status: `systemctl list-timers mt5-*`
 Run now: `sudo systemctl start mt5-logcheck.service`
 
+## Telegram bot (`mt5-bot.service`)
+
+Long-polling daemon serving `/dashboard` etc. After deploying a new
+`mt5_bot.py` you MUST restart it — the running process keeps the old
+module loaded and will silently serve stale formatting:
+`sudo systemctl restart mt5-bot.service`.
+
 ## MQL5 AccountSnapshot
 
 `AccountSnapshot.mq5` is a tiny EA that attaches to any chart (recommend a
