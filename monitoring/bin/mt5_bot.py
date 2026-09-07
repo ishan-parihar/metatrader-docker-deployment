@@ -90,7 +90,7 @@ def send_message(token: str, chat_id: str, text: str,
         in_pre = False
         
         for line in lines:
-            is_section_header = line.strip().startswith('<b>') and ('\u2500\u2500' in line or '💰' in line)
+            is_section_header = line.strip().startswith('<b>')
             
             if is_section_header and current_header is not None:
                 # Save previous section
@@ -340,8 +340,11 @@ def format_tg(text: str) -> str:
     """Convert structured mt5ctl output to HTML for Telegram.
 
     Headers (💰, ──) → <b>bold</b>.
-    Data blocks → <pre>monospace</pre>.
-    Preserves column alignment while adding visual hierarchy.
+    History detail groups (Recently closed / Per-strategy — …:) → header stays
+    visible, rows collapse into <blockquote expandable> (tap to expand).
+    Everything else → <pre>monospace</pre>.
+    Block entities never nest (Telegram rejects <pre> inside quotes), so the
+    quote buffer and the pre buffer are always flushed as siblings.
     """
     if not text:
         return text
@@ -349,11 +352,30 @@ def format_tg(text: str) -> str:
     lines = text.split('\n')
     result = []
     pre_buf = []
+    quote_buf = []
+    quote_open = False
 
     def flush_pre():
         if pre_buf:
             result.append('<pre>' + '\n'.join(pre_buf) + '</pre>')
             pre_buf.clear()
+
+    def flush_quote():
+        if not quote_buf:
+            return
+        while quote_buf and not quote_buf[0].strip():
+            quote_buf.pop(0)
+        while quote_buf and not quote_buf[-1].strip():
+            quote_buf.pop()
+        content = '\n'.join(quote_buf)
+        quote_buf.clear()
+        if not content:
+            return
+        if content.count('\n') < 2:
+            # Tiny group (e.g. '(no trades)') — a collapsed quote would be silly.
+            result.append('<pre>' + content + '</pre>')
+            return
+        result.append('<blockquote expandable>' + content + '</blockquote>')
 
     for line in lines:
         stripped = line.strip()
@@ -362,16 +384,30 @@ def format_tg(text: str) -> str:
             stripped.startswith('\U0001f4b0') or
             (stripped.startswith('\u2500\u2500') and '│' not in stripped)
         )
+        # Detail-group opener: its header stays visible, following rows collapse.
+        is_group = (
+            (stripped.startswith('Recently closed')
+             or stripped.startswith('Per-strategy \u2014'))
+            and stripped.endswith(':')
+        )
 
         if is_header:
             flush_pre()
+            flush_quote()
+            quote_open = False
+            result.append(f'<b>{escape_html(stripped)}</b>')
+        elif is_group:
+            flush_pre()
+            flush_quote()
+            quote_open = True
             result.append(f'<b>{escape_html(stripped)}</b>')
         elif not stripped:
-            pre_buf.append('')
+            (quote_buf if quote_open else pre_buf).append('')
         else:
-            pre_buf.append(escape_html(line))
+            (quote_buf if quote_open else pre_buf).append(escape_html(line))
 
     flush_pre()
+    flush_quote()
     return '\n'.join(result)
 
 
