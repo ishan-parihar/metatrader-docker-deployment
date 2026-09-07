@@ -58,6 +58,7 @@ case "$cmd" in
         fi
 
         _read_snapshot | python3 -c "
+import datetime as _dt
 import json, sys
 from collections import defaultdict
 
@@ -70,13 +71,38 @@ W = 42  # section header width
 # ── Strategy definitions: single source of truth (stream_defs.py, same dir) ──
 # $SCRIPT_DIR is expanded by bash (this python block is double-quoted).
 sys.path.insert(0, '$SCRIPT_DIR')
-from stream_defs import DEPLOY_LABEL, GOVERNOR, LIVE_STREAMS, MODEL_TREES, contract_size, magic_label
+from stream_defs import DEPLOY_LABEL, DEPLOYED_UTC, GOVERNOR, LEGACY_STREAMS, LIVE_STREAMS, MODEL_TREES, contract_size, deploy_ts, era_label, era_of, magic_label
 
 def trade_direction(t):
     # account_snapshot history rows are closing deals (entry=1 == DEAL_ENTRY_OUT):
     # a closed BUY position emits a SELL closing deal and vice versa.
     raw = t.get('type', '?')
     return {'SELL': 'BUY', 'BUY': 'SELL'}.get(raw, raw) if t.get('entry') == 1 else raw
+
+SWAP_TS = deploy_ts()  # v16 boundary (naive; server clock ~= UTC)
+SWAP_DAY = DEPLOYED_UTC[:10]
+
+def _parse_ts(x):
+    try:
+        return _dt.datetime.strptime(x, '%Y.%m.%d %H:%M:%S')
+    except Exception:
+        return None
+
+def _agg(trades):
+    # Era-pure aggregate over snapshot history rows (reconciles with the EA
+    # summary when both eras are summed: v16 + legacy == inception totals).
+    nets = [t.get('net', t.get('profit', 0)) for t in trades]
+    n = len(nets)
+    w = sum(1 for x in nets if x >= 0)
+    l = n - w
+    net = sum(nets)
+    gw = sum(x for x in nets if x >= 0)
+    gl = -sum(x for x in nets if x < 0)
+    aw = gw / w if w else 0
+    al = -(gl / l) if l else 0
+    pf = gw / gl if gl > 0 else 0
+    wr = w / n * 100.0 if n else 0
+    return {'n': n, 'w': w, 'l': l, 'net': net, 'wr': wr, 'aw': aw, 'al': al, 'pf': pf}
 
 def roi_on_margin(p, leverage):
     \"\"\"Correct ROI-on-margin for a position. Falls back to raw pnl_pct if math impossible.\"\"\"
@@ -258,56 +284,47 @@ def render_positions(out):
     section_end(out)
 
 
+def _per_rows(per):
+    # Shared per-strategy row renderer. Returns list of lines, best net first.
+    lines = []
+    for lab, d in sorted(per.items(), key=lambda kv: -kv[1]['net']):
+        n_ = d['n']; w_ = d['w']; net_ = fmt_money(d['net'], True); last_ = d['last'][:10]
+        lines.append(f'     {lab:22s} {n_:3d} trades {w_:2d}W/{n_-w_:2d}L \\u2502 net {net_:>10s} \\u2502 last {last_}')
+    return lines
+
 def render_history(out):
-    hist = s.get('history_summary', {})
-    count = hist.get('count', 0)
-    wins = hist.get('wins', 0)
-    losses = hist.get('losses', 0)
-    wr = hist.get('win_rate', 0)
-    hp = hist.get('total_pnl', 0)
-    hs_ = hist.get('total_swap', 0)
-    hc = hist.get('total_commission', 0)
-    hn = hist.get('total_net', 0)
-    avg_win = hist.get('avg_win', 0)
-    avg_loss = hist.get('avg_loss', 0)
-    pf = hist.get('profit_factor', 0)
-
     history = s.get('history', [])
-    # Label the window so the numbers can't be misread against rolling stats
-    window = ''
-    if history:
-        oldest = history[-1].get('time', '')
-        if oldest:
-            window = f' since {oldest[:10]}'
+    # Era segregation: magic numbers were recycled on SWAP_DAY, so the book
+    # a trade belongs to is decided by close time, never by magic alone.
+    # Unknown-time rows join the v16 group (current-book assumption).
+    v16 = [t for t in history if era_of(t.get('time', '')) != 'legacy']
+    leg = [t for t in history if era_of(t.get('time', '')) == 'legacy']
+    a = _agg(v16)
+    b = _agg(leg)
+    an = a['n']; aw = a['w']; al = a['l']; awr = a['wr']
+    bn = b['n']; bw = b['w']; bl = b['l']
 
-    section_header(out, '\\U0001f4cb', 'Closed Trades', f'{count} trades{window}, {wins}W/{losses}L, {wr:.0f}% WR')
+    section_header(out, '\\U0001f4cb', 'Closed Trades — v16 book', f'{an} trades since {SWAP_DAY}, {aw}W/{al}L, {awr:.0f}% WR')
 
-    if count > 0:
-        out.append(f'   Net {fmt_money(hn, True)} \\u2502 PnL {fmt_money(hp, True)} \\u2502 Swap {fmt_money(hs_, True)} \\u2502 Comm {fmt_money(hc, True)}')
-        out.append(f'   Avg Win {fmt_money(avg_win, True)} \\u2502 Avg Loss {fmt_money(avg_loss, True)} \\u2502 PF {pf:.2f}')
+    if an > 0:
+        anet = fmt_money(a['net'], True); aaw = fmt_money(a['aw'], True); aal = fmt_money(a['al'], True); apf = a['pf']
+        out.append(f'   Net {anet} \\u2502 Avg Win {aaw} \\u2502 Avg Loss {aal} \\u2502 PF {apf:.2f}')
     else:
-        out.append('   No closed trades in history window')
+        out.append('   No v16 trades yet')
+    if bn > 0:
+        bnet = fmt_money(b['net'], True)
+        bpf = b['pf']
+        out.append(f'   Legacy book (pre-{SWAP_DAY}): {bn} trades {bw}W/{bl}L \\u2502 net {bnet} \\u2502 PF {bpf:.2f}')
 
     if history:
         # Chronological integrity: sort explicitly by parsed close time, newest first.
         # The EA iterates the deal pool by index; MT5 does NOT guarantee index order
         # matches time order (batches/tickets can scramble it).
-        import datetime as _dt
-
-        def _parse_t(ts):
-            try:
-                return _dt.datetime.strptime(ts, '%Y.%m.%d %H:%M:%S')
-            except Exception:
-                return None
-
-        def _sort_key(t):
-            return _parse_t(t.get('time', '')) or _dt.datetime.min
-
-        history_sorted = sorted(history, key=_sort_key, reverse=True)  # newest first
+        history_sorted = sorted(history, key=lambda t: _parse_ts(t.get('time', '')) or _dt.datetime.min, reverse=True)
 
         show_n = min(15, len(history_sorted))
         section_end(out)
-        out.append(f'   Recently closed (newest first, last {show_n}):')
+        out.append(f'   Recently closed (newest first, last {show_n}; legacy rows wear legacy labels):')
         for t in history_sorted[:show_n]:
             net = t.get('net', t.get('profit', 0))
             sign = '+' if net >= 0 else ''
@@ -316,13 +333,16 @@ def render_history(out):
             t_type = trade_direction(t)
             t_sym = t.get('symbol', '?')
             t_lots = t.get('lots', 0)
-            t_magic = magic_label(t.get('magic', '?'))
+            t_magic = era_label(t.get('magic', '?'), t.get('time', ''))
             out.append(f'     {t_time} \\u2502 {icon} {sign}{net:.2f} \\u2502 {t_type} {t_sym} {t_lots} \\u2502 {t_magic}')
         section_end(out)
-        # per-strategy aggregation over the whole history window
-        per = {}
+        # per-strategy aggregation, segregated by era
+        per_v16 = {}
+        per_leg = {}
         for t in history:
-            lab = magic_label(t.get('magic', '?'))
+            is_leg = era_of(t.get('time', '')) == 'legacy'
+            lab = era_label(t.get('magic', '?'), t.get('time', ''))
+            per = per_leg if is_leg else per_v16
             d = per.setdefault(lab, {'n': 0, 'w': 0, 'net': 0.0, 'last': ''})
             net = t.get('net', t.get('profit', 0))
             d['n'] += 1; d['net'] += net
@@ -330,10 +350,13 @@ def render_history(out):
             ti = t.get('time', '')
             if ti > d['last']: d['last'] = ti
         section_end(out)
-        out.append('   Per-strategy (inception window):')
-        for lab, d in sorted(per.items(), key=lambda kv: -kv[1]['net']):
-            n_ = d['n']; w_ = d['w']; net_ = fmt_money(d['net'], True); last_ = d['last'][:10]
-            out.append(f'     {lab:16s} {n_:3d} trades {w_:2d}W/{n_-w_:2d}L \\u2502 net {net_:>10s} \\u2502 last {last_}')
+        out.append('   Per-strategy — v16 book:')
+        rows = _per_rows(per_v16)
+        out.extend(rows if rows else ['     (no v16 strategy trades yet)'])
+        section_end(out)
+        out.append('   Per-strategy — legacy book:')
+        rows = _per_rows(per_leg)
+        out.extend(rows if rows else ['     (none)'])
     section_end(out)
 
 
@@ -564,7 +587,7 @@ def render_rolling(out):
         section_end(out)
         return
 
-    for period, label in [('daily', 'Today'), ('weekly', 'Week'), ('monthly', 'Month')]:
+    for period, label, span in [('daily', 'Today', 1), ('weekly', 'Week', 7), ('monthly', 'Month', 30)]:
         r = rolling.get(period, {})
         pnl = r.get('pnl', 0)
         trades = r.get('trades', 0)
@@ -599,12 +622,23 @@ def render_rolling(out):
         out.append(f'   {label:8s} {fmt_money(pnl, True):>12s} \\u2502 {trade_s} \\u2502 {wl} \\u2502 {wr:.0f}% WR')
         if avg_s:
             out.append(f'{ROLL_INDENT}\\u2502 {avg_s}')
+        # Era honesty: flag windows that actually contain pre-swap trades.
+        # Self-expiring — the note vanishes once the swap leaves the window.
+        if span > 1:
+            cut = _dt.datetime.utcnow() - _dt.timedelta(days=span)
+            mixed = False
+            for t in s.get('history', []):
+                ts = _parse_ts(t.get('time', ''))
+                if ts and ts < SWAP_TS and ts >= cut:
+                    mixed = True
+                    break
+            if mixed:
+                out.append(f'{ROLL_INDENT}\\u2502 spans {SWAP_DAY} book swap (legacy+v16)')
     section_end(out)
 
 
 
 def render_streams(out):
-    import datetime as _dt
     now = _dt.datetime.utcnow()
     w7 = now - _dt.timedelta(days=7)
     w30 = now - _dt.timedelta(days=30)
@@ -614,16 +648,23 @@ def render_streams(out):
     for p in positions:
         m = str(p.get('magic', '?'))
         open_magics[m] = open_magics.get(m, 0) + 1
+    # Era segregation: only post-swap trades count toward live streams.
+    # Legacy-book trades (pre-SWAP_DAY, recycled magics) roll into one line.
     per = {}
-    def _pt(x):
-        try:
-            return _dt.datetime.strptime(x, '%Y.%m.%d %H:%M:%S')
-        except Exception:
-            return None
+    leg_n = 0; leg_w = 0; leg_net = 0.0
     for t in history:
         m = str(t.get('magic', '?'))
-        ts = _pt(t.get('time', ''))
+        ts = _parse_ts(t.get('time', ''))
         net = t.get('net', t.get('profit', 0))
+        if era_of(t.get('time', '')) == 'legacy':
+            try:
+                mi = int(t.get('magic', -1))
+            except Exception:
+                mi = -1
+            if mi in LEGACY_STREAMS:
+                leg_n += 1; leg_net += net
+                if net >= 0: leg_w += 1
+            continue
         d = per.setdefault(m, {'n7': 0, 'p7': 0.0, 'n30': 0, 'p30': 0.0, 'last': ''})
         if ts and ts >= w7:
             d['n7'] += 1; d['p7'] += net
@@ -643,6 +684,8 @@ def render_streams(out):
         n30 = d['n30']; p30 = fmt_money(d['p30'], True)
         last = d['last'] or '—'
         out.append('   ' + f'{label:16s} {st:8s} last {last:5s} \\u2502 7d {n7:2d}t {p7:>9s} \\u2502 30d {n30:2d}t {p30:>9s}')
+    leg_net_s = fmt_money(leg_net, True); leg_l = leg_n - leg_w
+    out.append(f'   Legacy book (pre-{SWAP_DAY}): {leg_n} trades {leg_w}W/{leg_l}L \\u2502 net {leg_net_s}')
     out.append(governor_line())
     section_end(out)
 

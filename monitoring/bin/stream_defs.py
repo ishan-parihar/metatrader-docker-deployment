@@ -6,7 +6,14 @@ LEGACY_* = frozen reference for the superseded metals-8/101-tree system
 (retired 2026-09-06). Kept so old logs/reports stay interpretable.
 
 Consumers: mt5ctl, mt5_bot.py, mt5_logcheck.py. No third-party deps.
+
+Era rule: magic numbers were recycled across deployments, so a magic only
+means a v16 stream for trades closed at/after DEPLOYED_UTC. Use era_of() /
+era_label() for ANY per-trade attribution — never label history by magic alone.
 """
+from datetime import datetime as _dt
+
+SNAP_TS_FMT = "%Y.%m.%d %H:%M:%S"  # AccountSnapshot time format (server clock ~= UTC)
 # ── LIVE (generated 2026-09-06T00:01:00Z — DO NOT HAND-EDIT) ──
 # Source: v16-accelerated-cent bundle (*.set). Regenerate with:
 #   gen_stream_defs.py --bundle-dir <dir> --trees 300 --label v16-accelerated-cent --deployed-utc <ts>
@@ -86,6 +93,39 @@ def magic_label(m):
         return LEGACY_STREAMS[m]["label"] + " (legacy)"
     if m in (0, GOVERNOR["magic"], GOVERNOR["snapshot_magic"]):
         return "manual/aux"
+    return "magic " + str(m)
+
+
+def deploy_ts():
+    """Deployment boundary as naive datetime (server clock ~= UTC)."""
+    return _dt.strptime(DEPLOYED_UTC, "%Y-%m-%dT%H:%M:%SZ")
+
+
+def era_of(time_str):
+    """'v16' | 'legacy' | 'unknown' for an AccountSnapshot time string."""
+    try:
+        ts = _dt.strptime(time_str, SNAP_TS_FMT)
+    except (TypeError, ValueError):
+        return "unknown"
+    return "v16" if ts >= deploy_ts() else "legacy"
+
+
+def era_label(magic, time_str):
+    """Era-correct display label: pre-swap trades use the LEGACY book,
+    post-swap trades the LIVE book. Fixes magic-number recycling."""
+    try:
+        m = int(magic)
+    except (TypeError, ValueError):
+        return str(magic)
+    if m in (0, GOVERNOR["magic"], GOVERNOR["snapshot_magic"]):
+        return "manual/aux"
+    era = era_of(time_str)
+    if era == "legacy" and m in LEGACY_STREAMS:
+        return LEGACY_STREAMS[m]["label"] + " (legacy)"
+    if m in LIVE_STREAMS:
+        return LIVE_STREAMS[m]["label"]
+    if m in LEGACY_STREAMS:
+        return LEGACY_STREAMS[m]["label"] + " (legacy)"
     return "magic " + str(m)
 
 
