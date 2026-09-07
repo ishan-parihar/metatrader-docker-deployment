@@ -9,7 +9,10 @@ Unified dashboard architecture:
   /charts               — chart attach status
   /help                 — show commands
 
-Sections: positions, history, exposure, drawdown, risk, orders, equity, rolling
+Sections: streams, positions, history, exposure, drawdown, risk, orders,
+          equity, rolling
+
+Live book: v16-accelerated-cent (9 streams, 300 trees) — see stream_defs.py.
 """
 
 import argparse
@@ -243,6 +246,7 @@ HELP_TEXT = """\
 
 <b>── Dashboard ──</b>
 /dashboard     Full dashboard
+/streams       Per-strategy status + governor
 /positions     Open trades + totals
 /history       Closed trades + stats
 /exposure      By symbol + strategy

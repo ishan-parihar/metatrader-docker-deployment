@@ -28,6 +28,9 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stream_defs import AUX_EAS, LIVE_STREAMS, MODEL_TREES
+
 # ── Constants ─────────────────────────────────────────────────────────────
 
 CONTAINER = "mt5-terminal"
@@ -36,31 +39,24 @@ MT5_DIR = f"{WINE_PREFIX}/drive_c/Program Files/MetaTrader 5"
 TERMINAL_LOG_DIR = f"{MT5_DIR}/logs"
 MQL5_LOG_DIR = f"{MT5_DIR}/MQL5/logs"
 
-# The 8 deployed charts — magic → (symbol, timeframe, atom)
+# Live book — magic → (symbol, timeframe, atom), from stream_defs.LIVE_STREAMS
+# (generated from the deployed EA bundle; see stream_defs.py).
 EXPECTED_CHARTS = {
-    992101: ("XAUUSDc", "M5",  "ny_orb"),
-    992102: ("XAGUSDc", "M15", "ny_orb"),
-    992103: ("XAUUSDc", "M5",  "d1_momentum"),
-    992104: ("XAGUSDc", "M15", "london_orb"),
-    992105: ("XAUUSDc", "M15", "london_orb"),
-    992106: ("XAUUSDc", "M5",  "monthly_momentum"),
-    992107: ("XAUUSDc", "M15", "ny_orb"),
-    992108: ("XAUUSDc", "M15", "d1_momentum"),
+    m: (s["symbol"], s["tf"], s["atom"]) for m, s in LIVE_STREAMS.items()
 }
 
-# Additional EAs that are expected but not part of the 8-chart book
-EXPECTED_AUX_EAS = {
-    "AccountSnapshot": "Live equity/PnL snapshot (attached to any chart)",
-}
+# Additional EAs that are expected but not part of the stream book
+EXPECTED_AUX_EAS = dict(AUX_EAS)
 
 # ── Regex patterns ────────────────────────────────────────────────────────
 
 # RG-22: wrong-TF chart attach (MQL5 log)
 FATAL_RG22_RE = re.compile(r"FATAL\s*\(RG-22\):\s*chart is (\w+),\s*set expects (\w+)")
 
-# EA banner (MQL5 log): === MetaSystemV9 (101 trees) magic=99210x tag=... thr=... box=...h ===
+# EA banner (MQL5 log): === MetaSystemV9 (300 trees) magic=99210x tag=... thr=... [box=...h] [atomCode=N] ===
+# v16 dropped the box field and added atomCode; pre-v16 banners have box but no atomCode.
 BANNER_RE = re.compile(
-    r"=== MetaSystemV9 \((\d+) trees\) magic=(\d+) tag=\S+ thr=([-\d.]+) box=(\d+)h ==="
+    r"=== MetaSystemV9 \((\d+) trees\) magic=(\d+) tag=\S+ thr=([-\d.]+)(?: box=(\d+)h)?(?: atomCode=(\d+))? ==="
 )
 
 # Warmup line (MQL5 log)
@@ -251,7 +247,7 @@ def read_account_snapshot(container: str) -> dict:
 def check_charts(terminal_entries: list[dict], mql5_entries: list[dict],
                  container: str = CONTAINER) -> dict:
     """
-    Verify all 8 expected charts are loaded with correct magics and the live model's tree count (101 since 2026-08-31).
+    Verify all live-book charts are loaded with correct magics and the live model's tree count (stream_defs.MODEL_TREES).
 
     Strategy (v2 — fixes false "removed" reports):
     1. PRIMARY: MQL5 log banner for this magic in the scan window. Banners
@@ -295,7 +291,7 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict],
             })
 
     # ── Step 2: Parse MQL5 log for banner/warmup details ──
-    # Banner: === MetaSystemV9 (101 trees) magic=99210x thr=... box=...h ===
+    # Banner: === MetaSystemV9 (<MODEL_TREES> trees) magic=99210x thr=... [box=...h] [atomCode=N] ===
     # The banner's magic number is the authoritative link to EXPECTED_CHARTS.
     banner_by_magic: dict[int, dict] = {}  # magic → {trees, thr, box, time, sym, tf}
     warmup_by_magic: dict[int, int] = {}  # magic → bars
@@ -319,9 +315,11 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict],
             trees = int(m.group(1))
             magic = int(m.group(2))
             thr = float(m.group(3))
-            box = int(m.group(4))
+            box = int(m.group(4)) if m.group(4) else None
+            atom_code = int(m.group(5)) if m.group(5) else None
             info = {
                 "trees": trees, "thr": thr, "box": box,
+                "atom_code": atom_code,
                 "time": e["time"], "sym": sym, "tf": tf,
                 "ea": ea_name,
             }
@@ -451,7 +449,7 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict],
     missing = expected - loaded_magics
     wrong_build = [
         mg for mg in loaded_magics
-        if banner_by_magic.get(mg, {}).get("trees") not in (None, 101)
+        if banner_by_magic.get(mg, {}).get("trees") not in (None, MODEL_TREES)
     ]
 
     # Filter stale init failures: stale if a later "loaded" event exists for
@@ -640,7 +638,7 @@ def format_report(report: dict) -> str:
     if ch["missing_magics"]:
         lines.append(f"   🔴 Missing magics: {ch['missing_magics']}")
     if ch["wrong_build_magics"]:
-        lines.append(f"   🔴 Wrong build (not 101 trees — live canonical): {ch['wrong_build_magics']}")
+        lines.append(f"   🔴 Wrong build (not {MODEL_TREES} trees — live canonical): {ch['wrong_build_magics']}")
     if ch["fatals"]:
         for f in ch["fatals"]:
             lines.append(f"   🔴 FATAL (RG-22): {f['chart_tf']} chart, set expects {f['expected_tf']} @ {f['time']}")

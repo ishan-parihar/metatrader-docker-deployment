@@ -20,20 +20,15 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stream_defs import MODEL_TREES
+
 REPORT_DIR = "/home/ishanp/mt5-deploy/logcheck/reports"
 ACCOUNT_SNAPSHOT_PATH = "/home/ishanp/mt5-deploy/logcheck/state/account.json"
 ALERT_SCRIPT = "/home/ishanp/mt5-deploy/logcheck/bin/mt5_alert.py"
 
-EXPECTED_CHARTS = {
-    992101: ("XAUUSDc", "M5",  "ny_orb"),
-    992102: ("XAGUSDc", "M15", "ny_orb"),
-    992103: ("XAUUSDc", "M5",  "d1_momentum"),
-    992104: ("XAGUSDc", "M15", "london_orb"),
-    992105: ("XAUUSDc", "M15", "london_orb"),
-    992106: ("XAUUSDc", "M5",  "monthly_momentum"),
-    992107: ("XAUUSDc", "M15", "ny_orb"),
-    992108: ("XAUUSDc", "M15", "d1_momentum"),
-}
+# Stream book lives in stream_defs.LIVE_STREAMS (single source of truth).
+# (A hardcoded EXPECTED_CHARTS map used to sit here, unused — removed 2026-09-07.)
 
 # Per ad12-operations-manual.md §3
 EXPECTATION_BANDS = {
@@ -237,7 +232,7 @@ def format_summary(window_label: str, window_days: int, health: dict,
             warmup = info.get("warmup_bars")
             warmup_str = f"warmup={warmup}" if warmup else "⚠️ NO warmup"
             trees = info.get("trees")
-            trees_ok = "✅" if trees == 141 else ("🔴" if trees else "⚠️")
+            trees_ok = "✅" if trees == MODEL_TREES else ("🔴" if trees else "⚠️")
             trees_str = f"{trees} trees" if trees else "no banner"
             lines.append(f"  {trees_ok} magic={mg} {info.get('symbol','?')},{info.get('tf','?')} "
                          f"{info.get('atom','?')} ({trees_str}, {warmup_str})")

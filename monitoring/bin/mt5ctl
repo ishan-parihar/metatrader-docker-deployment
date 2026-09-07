@@ -2,8 +2,9 @@
 # mt5ctl — AD-12 MT5 control utility v4.
 #
 # Commands:
-#   dashboard [section]    Unified dashboard. Sections: positions, history,
-#                          exposure, drawdown, risk, orders, equity, rolling
+#   dashboard [section]    Unified dashboard. Sections: streams, positions,
+#                          history, exposure, drawdown, risk, orders, equity,
+#                          rolling
 #   dashboard -json        Raw JSON
 #   status                 1-line health
 #   health [days]          Full health check (logcheck)
@@ -66,49 +67,16 @@ SECTION = '$section'
 SEP = '\\u2500\\u2500'
 W = 42  # section header width
 
-# ── Symbol contract sizes (Exness cent account) ──
-# SYMBOL_TRADE_CONTRACT_SIZE returns bogus values in this terminal (1 for XAUUSDc, 50 for
-# XAGUSDc), which inflated pnl_pct ~100x. These are the real specs; default 100 for unknown FX.
-CONTRACT_SIZES = {
-    'XAUUSD': 100, 'XAGUSD': 5000,
-    'XAUUSDc': 100, 'XAGUSDc': 5000,
-    'XAUEUR': 100, 'XAGEUR': 5000,
-}
-DEFAULT_CONTRACT = 100000  # standard FX lot (100k units)
-
-# ── Streams: magic -> strategy label (AD-12 metals-8, deployed 2026-08-31) ──
-MAGIC_INFO = {
-    992101: ('XAU M5 ny_orb', 'XAUUSDc', 'M5'),
-    992102: ('XAG M15 ny_orb', 'XAGUSDc', 'M15'),
-    992103: ('XAU M5 d1_mom', 'XAUUSDc', 'M5'),
-    992104: ('XAG M15 lon_orb', 'XAGUSDc', 'M15'),
-    992105: ('XAU M15 lon_orb', 'XAUUSDc', 'M15'),
-    992106: ('XAU M5 mon_mom', 'XAUUSDc', 'M5'),
-    992107: ('XAU M15 ny_orb', 'XAUUSDc', 'M15'),
-    992108: ('XAU M15 d1_mom', 'XAUUSDc', 'M15'),
-    0:      ('manual/aux',     '', ''),
-}
-EXPECTED_TREES = 101  # 2026-08-31 canonical (was 231 Jul-28, 141 before)
+# ── Strategy definitions: single source of truth (stream_defs.py, same dir) ──
+# $SCRIPT_DIR is expanded by bash (this python block is double-quoted).
+sys.path.insert(0, '$SCRIPT_DIR')
+from stream_defs import DEPLOY_LABEL, GOVERNOR, LIVE_STREAMS, MODEL_TREES, contract_size, magic_label
 
 def trade_direction(t):
     # account_snapshot history rows are closing deals (entry=1 == DEAL_ENTRY_OUT):
     # a closed BUY position emits a SELL closing deal and vice versa.
     raw = t.get('type', '?')
     return {'SELL': 'BUY', 'BUY': 'SELL'}.get(raw, raw) if t.get('entry') == 1 else raw
-
-def magic_label(m):
-    try: m = int(m)
-    except Exception: return str(m)
-    return MAGIC_INFO.get(m, ('magic ' + str(m), '', ''))[0]
-
-def contract_size(sym):
-    base = sym.upper()
-    if base in CONTRACT_SIZES:
-        return CONTRACT_SIZES[base]
-    for k, v in CONTRACT_SIZES.items():
-        if base.startswith(k):
-            return v
-    return DEFAULT_CONTRACT
 
 def roi_on_margin(p, leverage):
     \"\"\"Correct ROI-on-margin for a position. Falls back to raw pnl_pct if math impossible.\"\"\"
@@ -117,7 +85,10 @@ def roi_on_margin(p, leverage):
     lev = leverage if leverage > 0 else 100
     if lots <= 0 or open_px <= 0:
         return None
-    margin = lots * contract_size(p.get('symbol', '')) * open_px / lev
+    cs = contract_size(p.get('symbol', ''))
+    if cs is None:  # unknown symbol: omit ROI, never guess (see stream_defs)
+        return None
+    margin = lots * cs * open_px / lev
     if margin <= 0:
         return None
     net = p.get('profit', 0) + p.get('swap', 0) + p.get('commission', 0)
@@ -157,7 +128,9 @@ def governor_line():
         gov_ev = m[m.index('[GOV]'):].strip() if '[GOV]' in m else ''
         if fm:
             st = 'FROZEN until next month' if fm.group(1) == '1' else 'active'
-            line = '   Governor: ' + st + ' (trail@35)'
+            tm = _re.search(r'trail@([\d.]+)%', m)
+            trail_s = tm.group(1) if tm else str(GOVERNOR['trail_pct'])
+            line = '   Governor: ' + st + ' (trail@' + trail_s + ')'
             if pk:
                 line += ' | peak ' + pk.group(1)
             if gov_ev:
@@ -197,7 +170,9 @@ def show_account(out):
     if peak > 0:
         dd_amt = peak - equity
         out.append(f'   Peak {fmt_money(peak)} \\u2502 DD {dd:.2f}% ({fmt_money(dd_amt)} from peak)')
-    out.append(f'   Model {EXPECTED_TREES} trees (2026-08-31) \\u2502 8 streams + BookGovernor (T4 trail@35%)')
+    gov_trail = GOVERNOR['trail_pct']
+    n_streams = len(LIVE_STREAMS)
+    out.append(f'   Model {MODEL_TREES} trees ({DEPLOY_LABEL}) \\u2502 {n_streams} streams + BookGovernor (T4 trail@{gov_trail}%)')
 
 
 def render_positions(out):
@@ -535,8 +510,9 @@ def render_risk(out):
             # with contract size correction.
             live_sl_dist = sl_gap or abs(entry - sl)
             if risk == 0 and live_sl_dist > 0 and equity > 0:
-                risk_money = live_sl_dist * contract_size(p.get('symbol', '')) * p.get('lots', 0)
-                risk = risk_money / equity * 100.0
+                cs = contract_size(p.get('symbol', ''))
+                if cs is not None:  # unknown symbol: leave risk unknown, never guess
+                    risk = live_sl_dist * cs * p.get('lots', 0) / equity * 100.0
 
             gap_s = f'{sl_gap:.5f}' if sl > 0 else '\u2014'
             risk_s = f'{risk:.2f}%' if risk > 0 else '\u2014'
@@ -656,9 +632,10 @@ def render_streams(out):
         if ts and ts.strftime('%m-%d') > d['last']:
             d['last'] = ts.strftime('%m-%d')
     section_header(out, '\u2699\ufe0f',
-                   'Streams (8 live + governor)')
-    for magic in sorted(k for k in MAGIC_INFO if k != 0):
-        label, sym, tf = MAGIC_INFO[magic]
+                   f'Streams ({len(LIVE_STREAMS)} live + governor)')
+    for magic in sorted(LIVE_STREAMS):
+        sdef = LIVE_STREAMS[magic]
+        label, sym, tf = sdef['label'], sdef['symbol'], sdef['tf']
         m = str(magic)
         d = per.get(m, {'n7': 0, 'p7': 0.0, 'n30': 0, 'p30': 0.0, 'last': ''})
         st = 'open ' + str(open_magics[m]) if m in open_magics else 'idle'
@@ -693,7 +670,7 @@ elif SECTION in SECTION_RENDERERS:
     SECTION_RENDERERS[SECTION](out)
 else:
     print(f'Unknown section: {SECTION}')
-    print('Sections: positions, history, exposure, drawdown, risk, orders, equity, rolling')
+    print('Sections: streams, positions, history, exposure, drawdown, risk, orders, equity, rolling')
     sys.exit(1)
 
 print('\\n'.join(out))
@@ -761,6 +738,8 @@ print(f'{icon} {sev} | equity {eq_s} USC | positions {pos} | trade {trade_s}{sna
         echo "\u2500\u2500 Chart attach status \u2500\u2500"
         "${LOGCHECK}" --days 2 --json 2>/dev/null | python3 -c "
 import json, sys
+sys.path.insert(0, '$SCRIPT_DIR')
+from stream_defs import MODEL_TREES
 r = json.load(sys.stdin)
 ch = r.get('charts', {})
 loaded = ch.get('loaded_count', ch.get('found_count', '?'))
@@ -775,7 +754,7 @@ for mg, info in sorted(ch.get('charts', {}).items()):
     warmup = info.get('warmup_bars')
     warmup_str = f'warmup={warmup}' if warmup else '\u26a0\ufe0f NO warmup'
     trees = info.get('trees')
-    trees_ok = '\u2705' if trees == 101 else ('\U0001f534' if trees else '\u26a0\ufe0f')
+    trees_ok = '\u2705' if trees == MODEL_TREES else ('\U0001f534' if trees else '\u26a0\ufe0f')
     trees_str = f'{trees} trees' if trees else 'no banner'
     print(f'  {trees_ok} magic={mg} {info.get(\"symbol\",\"?\")},{info.get(\"tf\",\"?\")} {info.get(\"atom\",\"?\")} ({trees_str}, {warmup_str})')
 aux = ch.get('auxiliary_eas', {})
@@ -820,7 +799,7 @@ Commands:
   charts                  Chart attach status
   alert test              Send a test alert
 
-Sections: positions, history, exposure, drawdown, risk, orders, equity, rolling
+Sections: streams, positions, history, exposure, drawdown, risk, orders, equity, rolling
 
 Examples:
   mt5ctl dashboard            # everything

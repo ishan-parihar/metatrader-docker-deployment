@@ -9,3 +9,7 @@
 
 # MemSearch
 .memsearch/
+
+# Python
+__pycache__/
+*.pyc

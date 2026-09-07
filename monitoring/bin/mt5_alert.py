@@ -27,6 +27,9 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from stream_defs import MODEL_TREES
+
 CONFIG_PATH = "/home/ishanp/mt5-deploy/logcheck/config/alert.conf"
 
 # ── Config ────────────────────────────────────────────────────────────────
@@ -189,7 +192,7 @@ def format_email(report: dict) -> tuple[str, str]:
     for mg, info in sorted(ch.get("charts", {}).items()):
         warmup = info.get("warmup_bars")
         warmup_str = f"warmup={warmup}" if warmup else "⚠️ NO warmup"
-        trees_ok = "✅" if info.get("trees") == 141 else "🔴"
+        trees_ok = "✅" if info.get("trees") == MODEL_TREES else "🔴"
         lines.append(f"  {trees_ok} magic={mg} {info.get('symbol','?')},{info.get('tf','?')} "
                      f"{info.get('atom','?')} ({info.get('trees','?')} trees, {warmup_str})")
 

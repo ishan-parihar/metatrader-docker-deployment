@@ -59,6 +59,7 @@ mt5ctl alert test                   # test email + Telegram
 /orders             # pending orders
 /equity             # equity curve
 /rolling            # daily/weekly/monthly
+/streams            # per-strategy status + governor
 /status             # 1-line health
 /health             # full health
 /charts             # chart status
@@ -105,6 +106,7 @@ All legacy aliases (`/pnl`, `/open`, `/trades`, `/snap`) map to `/dashboard`.
 | v4.00 | peak_equity, drawdown_pct, margin_utilization, symbol_exposure, strategy_performance, pending_orders, position_risks, avg_trade_stats, equity_snapshots |
 | v4.01 | peak_equity persisted to file (`peak_equity.dat`), survives OnInit restarts; rolling stats include avg_win/avg_loss |
 | v4.02 | **FindHistoricalPeakBalance()** — queries ALL deal history on init, reconstructs running balance from first deposit, finds true all-time peak. Drawdown now reflects account inception (8300 USC) not EA attach time. |
+| v16 (2026-09-06) | **v16-accelerated-cent live**: 9 streams (magics 992101–109, BTCUSDc/GBPJPYc/XAGUSDc/XAUUSDc), **300-tree** model, BookGovernor **trail@40%** + graduation freeze @100k USC. Banner format changed: **no `box=` field, new `atomCode=N`**. Bot reads all strategy defs from `stream_defs.py` (generated from bundle `*.set`); metals-8/101-tree map kept frozen as `LEGACY_*`. |
 
 ## File Structure (Canonical)
 
@@ -133,6 +135,10 @@ metatrader-docker-deployment/
     ├── config/alert.conf.example
     └── bin/
         ├── mt5ctl               # Main CLI (bash + embedded Python)
+        ├── stream_defs.py       # SINGLE SOURCE OF TRUTH: LIVE book (generated
+        │                        #   from EA bundle *.set) + frozen LEGACY map +
+        │                        #   governor spec + contract sizes
+        ├── gen_stream_defs.py   # Regenerates LIVE block from a bundle dir
         ├── mt5_bot.py           # Telegram bot (HTML parse mode)
         ├── mt5_logcheck.py      # Core health checks
         ├── mt5_logcheck.sh      # Wrapper for systemd

@@ -72,8 +72,8 @@ mt5ctl alert test
 | Container `mt5-terminal` running & healthy | `docker ps` | CRITICAL if down |
 | `terminal64.exe` process alive | `docker exec pgrep` | CRITICAL if dead |
 | Broker connection (last `authorized on`) | terminal log | CRITICAL if missing |
-| All 8 charts loaded with magics 992101–992108 | MQL5 log | CRITICAL if missing |
-| 141-tree build confirmation per chart | `=== MetaSystemV9 (141 trees) ===` | CRITICAL if wrong |
+| All 9 live-book charts loaded (magics 992101–992109, see `stream_defs.py`) | MQL5 log | CRITICAL if missing |
+| Live-model build confirmation per chart (`=== MetaSystemV9 (<MODEL_TREES> trees) ===`) | MQL5 log | CRITICAL if wrong |
 | Warmup completed per chart | `[V9] rolling-median warmup: N bars` | WARNING if missing |
 | No active `FATAL (RG-22)` errors | MQL5 log | CRITICAL if present |
 | Trade count (entries + deals) | both logs | INFO |
