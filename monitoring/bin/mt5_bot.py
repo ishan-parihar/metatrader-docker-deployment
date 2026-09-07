@@ -271,10 +271,11 @@ CMD_ALIASES = {
     "orders": "dashboard orders",
     "equity": "dashboard equity",
     "rolling": "dashboard rolling",
+    "streams": "dashboard streams",
 }
 
 VALID_SECTIONS = {"positions", "history", "exposure", "drawdown",
-                  "risk", "orders", "equity", "rolling"}
+                  "risk", "orders", "equity", "rolling", "streams"}
 
 # Telegram Bot API command menu — these appear as clickable / commands
 BOT_COMMANDS = [
@@ -287,6 +288,7 @@ BOT_COMMANDS = [
     {"command": "orders",        "description": "📋 Pending orders"},
     {"command": "equity",        "description": "📈 Equity curve"},
     {"command": "rolling",       "description": "📈 Daily/weekly/monthly PnL"},
+    {"command": "streams",       "description": "🧬 Per-strategy status + governor"},
     {"command": "status",        "description": "✅ 1-line health check"},
     {"command": "health",        "description": "🔍 Full health report"},
     {"command": "charts",        "description": "📊 Chart attach status"},

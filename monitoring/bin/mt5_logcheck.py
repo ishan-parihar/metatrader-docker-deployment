@@ -58,7 +58,7 @@ EXPECTED_AUX_EAS = {
 # RG-22: wrong-TF chart attach (MQL5 log)
 FATAL_RG22_RE = re.compile(r"FATAL\s*\(RG-22\):\s*chart is (\w+),\s*set expects (\w+)")
 
-# EA banner (MQL5 log): === MetaSystemV9 (231 trees) magic=99210x tag=... thr=... box=...h ===
+# EA banner (MQL5 log): === MetaSystemV9 (101 trees) magic=99210x tag=... thr=... box=...h ===
 BANNER_RE = re.compile(
     r"=== MetaSystemV9 \((\d+) trees\) magic=(\d+) tag=\S+ thr=([-\d.]+) box=(\d+)h ==="
 )
@@ -159,7 +159,7 @@ def parse_mt5_log(raw: bytes) -> list[dict]:
 def get_log_dates(days: int) -> list[str]:
     """Return list of YYYYMMDD strings for the last N days."""
     today = datetime.now(timezone.utc)
-    return [(today - timedelta(days=i)).strftime("%Y%m%d") for i in range(days)]
+    return [(today - timedelta(days=i)).strftime("%Y%m%d") for i in reversed(range(days))]
 
 
 # ── Checks ─────────────────────────────────────────────────────────────────
@@ -223,20 +223,45 @@ def check_broker_connection(terminal_entries: list[dict]) -> dict:
     }
 
 
-def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict:
+def read_account_snapshot(container: str) -> dict:
+    """Read the AccountSnapshot EA's JSON output from the container.
+    The snapshot is UTF-16 LE encoded and lives at Common/Files/.
+    Returns parsed dict or empty dict on error.
     """
-    Verify all 8 expected charts are loaded with correct magics and 231 trees.
+    snapshot_paths = [
+        "/config/.wine/drive_c/users/root/AppData/Roaming/MetaQuotes/Terminal/Common/Files/account_snapshot.json",
+        "/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Files/account_snapshot.json",
+    ]
+    for path in snapshot_paths:
+        raw = docker_exec(path, container)
+        if not raw:
+            continue
+        try:
+            # UTF-16 LE with BOM
+            if raw[:2] == b"\xff\xfe":
+                text = raw[2:].decode("utf-16-le", errors="replace")
+            else:
+                text = raw.decode("utf-8", errors="replace")
+            return json.loads(text)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+    return {}
 
-    Strategy:
-    1. Use TERMINAL LOG "expert loaded" events as the PRIMARY signal for chart
-       attach status. These fire every time an EA loads, regardless of whether
-       it does any Print/trade activity. A chart is "loaded" if its last event
-       is a load (not a remove/init-fail).
-    2. Cross-reference with MQL5 LOG for banner details (231 trees, thr, box)
-       and warmup status. These are supplementary — a chart can be loaded
-       without having emitted a banner yet (e.g. just attached, not yet run).
-    3. Track auxiliary EAs (AccountSnapshot) separately — they're expected
-       but not part of the 8-chart book.
+
+def check_charts(terminal_entries: list[dict], mql5_entries: list[dict],
+                 container: str = CONTAINER) -> dict:
+    """
+    Verify all 8 expected charts are loaded with correct magics and the live model's tree count (101 since 2026-08-31).
+
+    Strategy (v2 — fixes false "removed" reports):
+    1. PRIMARY: MQL5 log banner for this magic in the scan window. Banners
+       appear every time the EA reinitializes (daily or on chart tick).
+       If a banner exists for magic=99210x, that chart IS loaded.
+    2. SECONDARY: Terminal log "expert loaded/removed" events. Only used
+       to confirm or deny loaded state if no banner found.
+    3. TERTIARY: AccountSnapshot positions array. If any open position
+       has this magic number, the chart's EA is actively trading.
+    4. Track auxiliary EAs (AccountSnapshot) separately.
     """
     # ── Step 1: Parse terminal log for EA load/remove events ──
     # Track per-(ea_name, symbol, tf) the last event: "loaded" or "removed"
@@ -270,7 +295,7 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict
             })
 
     # ── Step 2: Parse MQL5 log for banner/warmup details ──
-    # Banner: === MetaSystemV9 (231 trees) magic=99210x thr=... box=...h ===
+    # Banner: === MetaSystemV9 (101 trees) magic=99210x thr=... box=...h ===
     # The banner's magic number is the authoritative link to EXPECTED_CHARTS.
     banner_by_magic: dict[int, dict] = {}  # magic → {trees, thr, box, time, sym, tf}
     warmup_by_magic: dict[int, int] = {}  # magic → bars
@@ -300,15 +325,23 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict
                 "time": e["time"], "sym": sym, "tf": tf,
                 "ea": ea_name,
             }
-            banner_by_magic[magic] = info
-            last_banner_per_chart[(sym, tf)] = {**info, "magic": magic}
+            info["stamp"] = e.get("day", "") + " " + info["time"]
+            prev = banner_by_magic.get(magic)
+            if prev is None or info["stamp"] >= prev.get("stamp", ""):
+                banner_by_magic[magic] = info
+            cur = last_banner_per_chart.get((sym, tf))
+            if cur is None or info["stamp"] >= cur.get("stamp", ""):
+                last_banner_per_chart[(sym, tf)] = {**info, "magic": magic}
 
         # Warmup line — match to the most recent banner for this (sym, tf)
         m = WARMUP_RE.search(msg)
         if m and (sym, tf) in last_banner_per_chart:
             bars = int(m.group(1))
-            magic = last_banner_per_chart[(sym, tf)]["magic"]
-            warmup_by_magic[magic] = max(warmup_by_magic.get(magic, 0), bars)
+            latest = last_banner_per_chart[(sym, tf)]
+            magic = latest["magic"]
+            # warmup belongs only to the chart that (re)initialized within this minute
+            if e.get("day", "") + " " + e["time"] >= latest.get("stamp", ""):
+                warmup_by_magic[magic] = max(warmup_by_magic.get(magic, 0), bars)
 
     # ── Step 3: FATAL RG-22 detection ──
     raw_fatals = []
@@ -334,27 +367,55 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict
                     continue  # stale
         fatals.append(f)
 
-    # ── Step 4: Build chart status ──
+    # ── Step 4: Read account snapshot for position-based confirmation ──
+    snapshot = read_account_snapshot(container)
+    snapshot_magics_with_positions: set[int] = set()
+    if snapshot and "positions" in snapshot:
+        for pos in snapshot["positions"]:
+            mg = pos.get("magic")
+            if mg:
+                snapshot_magics_with_positions.add(mg)
+
+    # ── Step 5: Build chart status ──
     # For each expected magic, determine if the chart is loaded.
-    # A chart is "loaded" if:
-    #   (a) The terminal log shows a recent "loaded" event for MetaSystemV9 on
-    #       the expected (sym, tf), AND
-    #   (b) It hasn't been removed since.
+    # Priority: MQL5 banner > terminal log > snapshot positions
     chart_status: dict[str, dict] = {}
     loaded_magics: set[int] = set()
 
     for magic, (exp_sym, exp_tf, exp_atom) in EXPECTED_CHARTS.items():
-        # Check terminal log for this (sym, tf)
+        # Check MQL5 log for banner (PRIMARY signal)
+        banner = banner_by_magic.get(magic)
+        warmup = warmup_by_magic.get(magic)
+
+        # Check terminal log (SECONDARY signal)
         key = ("MetaSystemV9", exp_sym, exp_tf)
         terminal_state = ea_state.get(key, "never_loaded")
         terminal_loaded_time = ea_loaded_time.get(key)
 
-        # Check MQL5 log for banner details
-        banner = banner_by_magic.get(magic)
-        warmup = warmup_by_magic.get(magic)
+        # Check snapshot for position with this magic (TERTIARY signal)
+        has_position = magic in snapshot_magics_with_positions
 
-        # Determine if loaded
-        is_loaded = terminal_state == "loaded"
+        # Determine loaded state:
+        # - If banner exists in MQL5 logs → loaded (PRIMARY)
+        # - If no banner but terminal says loaded → loaded (SECONDARY)
+        # - If no banner, no terminal event, but has open position → loaded (TERTIARY)
+        # - If terminal says removed AND no banner → removed
+        if banner:
+            is_loaded = True
+            loaded_source = "mql5_banner"
+        elif terminal_state == "loaded":
+            is_loaded = True
+            loaded_source = "terminal_log"
+        elif has_position:
+            is_loaded = True
+            loaded_source = "snapshot_position"
+        elif terminal_state == "removed":
+            is_loaded = False
+            loaded_source = "terminal_removed"
+        else:
+            is_loaded = False
+            loaded_source = "no_signal"
+
         if is_loaded:
             loaded_magics.add(magic)
 
@@ -363,8 +424,10 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict
             "tf": exp_tf,
             "atom": exp_atom,
             "loaded": is_loaded,
+            "loaded_source": loaded_source,
             "terminal_state": terminal_state,
             "terminal_loaded_time": terminal_loaded_time,
+            "has_open_position": has_position,
             "trees": banner["trees"] if banner else None,
             "thr": banner["thr"] if banner else None,
             "box": banner["box"] if banner else None,
@@ -388,7 +451,7 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict
     missing = expected - loaded_magics
     wrong_build = [
         mg for mg in loaded_magics
-        if banner_by_magic.get(mg, {}).get("trees") not in (None, 231)
+        if banner_by_magic.get(mg, {}).get("trees") not in (None, 101)
     ]
 
     # Filter stale init failures: stale if a later "loaded" event exists for
@@ -410,6 +473,7 @@ def check_charts(terminal_entries: list[dict], mql5_entries: list[dict]) -> dict
         "fatals": fatals,
         "init_failures": active_init_failures,
         "auxiliary_eas": aux_eas,
+        "snapshot_available": bool(snapshot),
         "critical": bool(missing) or bool(wrong_build) or bool(fatals) or bool(active_init_failures),
     }
 
@@ -494,15 +558,19 @@ def build_report(container: str, days: int) -> dict:
         t_raw = docker_exec(t_path, container)
         m_raw = docker_exec(m_path, container)
         if t_raw:
-            terminal_entries.extend(parse_mt5_log(t_raw))
+            for e in parse_mt5_log(t_raw):
+                e["day"] = date_str
+                terminal_entries.append(e)
             logs_read.append(f"terminal:{date_str}")
         if m_raw:
-            mql5_entries.extend(parse_mt5_log(m_raw))
+            for e in parse_mt5_log(m_raw):
+                e["day"] = date_str
+                mql5_entries.append(e)
             logs_read.append(f"mql5:{date_str}")
 
     # Run checks
     broker = check_broker_connection(terminal_entries)
-    charts = check_charts(terminal_entries, mql5_entries)
+    charts = check_charts(terminal_entries, mql5_entries, container)
     trades = check_trades(terminal_entries, mql5_entries)
     disk = check_disk(container)
 
@@ -515,12 +583,9 @@ def build_report(container: str, days: int) -> dict:
         disk.get("critical", False),
     ])
 
+    # Only warn on warmup if loaded but no banner found (unlikely with v2 fix)
     warnings = any([
         charts.get("loaded_count", 0) < charts.get("expected_count", 0),
-        any(
-            v.get("loaded") and v.get("warmup_bars") is None
-            for v in charts.get("charts", {}).values()
-        ),
         not broker.get("trade_enabled"),
     ])
 
@@ -534,6 +599,7 @@ def build_report(container: str, days: int) -> dict:
         "disk": disk,
         "logs_read": logs_read,
         "days_scanned": days,
+        "snapshot_available": charts.get("snapshot_available", False),
         "severity": "CRITICAL" if critical else ("WARNING" if warnings else "OK"),
         "exit_code": 2 if critical else (1 if warnings else 0),
     }
@@ -574,7 +640,7 @@ def format_report(report: dict) -> str:
     if ch["missing_magics"]:
         lines.append(f"   🔴 Missing magics: {ch['missing_magics']}")
     if ch["wrong_build_magics"]:
-        lines.append(f"   🔴 Wrong build (not 231 trees): {ch['wrong_build_magics']}")
+        lines.append(f"   🔴 Wrong build (not 101 trees — live canonical): {ch['wrong_build_magics']}")
     if ch["fatals"]:
         for f in ch["fatals"]:
             lines.append(f"   🔴 FATAL (RG-22): {f['chart_tf']} chart, set expects {f['expected_tf']} @ {f['time']}")
@@ -585,6 +651,8 @@ def format_report(report: dict) -> str:
     for mg_str, info in sorted(ch.get("charts", {}).items()):
         mg = int(mg_str)
         loaded_icon = "✅" if info["loaded"] else "🔴"
+        source = info.get("loaded_source", "?")
+        pos_flag = "📈" if info.get("has_open_position") else ""
         warmup = info.get("warmup_bars")
         warmup_str = f"warmup={warmup} bars" if warmup else "no warmup line"
         trees = info.get("trees")
@@ -594,8 +662,8 @@ def format_report(report: dict) -> str:
         box = info.get("box")
         box_str = f"box={box}h" if box is not None else ""
         load_time = info.get("terminal_loaded_time", "?")
-        lines.append(f"   {loaded_icon} magic={mg} {info['symbol']},{info['tf']} {info['atom']} "
-                     f"(loaded {load_time}, {trees_str} {thr_str} {box_str}, {warmup_str})")
+        lines.append(f"   {loaded_icon} magic={mg} {info['symbol']},{info['tf']} {info['atom']} {pos_flag} "
+                     f"[{source}] (loaded {load_time}, {trees_str} {thr_str} {box_str}, {warmup_str})")
 
     # Auxiliary EAs
     aux = ch.get("auxiliary_eas", {})

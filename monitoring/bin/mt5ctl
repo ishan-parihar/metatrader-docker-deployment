@@ -63,8 +63,65 @@ from collections import defaultdict
 s = json.load(sys.stdin)
 SECTION = '$section'
 
-SEP = '\u2500\u2500'
+SEP = '\\u2500\\u2500'
 W = 42  # section header width
+
+# ── Symbol contract sizes (Exness cent account) ──
+# SYMBOL_TRADE_CONTRACT_SIZE returns bogus values in this terminal (1 for XAUUSDc, 50 for
+# XAGUSDc), which inflated pnl_pct ~100x. These are the real specs; default 100 for unknown FX.
+CONTRACT_SIZES = {
+    'XAUUSD': 100, 'XAGUSD': 5000,
+    'XAUUSDc': 100, 'XAGUSDc': 5000,
+    'XAUEUR': 100, 'XAGEUR': 5000,
+}
+DEFAULT_CONTRACT = 100000  # standard FX lot (100k units)
+
+# ── Streams: magic -> strategy label (AD-12 metals-8, deployed 2026-08-31) ──
+MAGIC_INFO = {
+    992101: ('XAU M5 ny_orb', 'XAUUSDc', 'M5'),
+    992102: ('XAG M15 ny_orb', 'XAGUSDc', 'M15'),
+    992103: ('XAU M5 d1_mom', 'XAUUSDc', 'M5'),
+    992104: ('XAG M15 lon_orb', 'XAGUSDc', 'M15'),
+    992105: ('XAU M15 lon_orb', 'XAUUSDc', 'M15'),
+    992106: ('XAU M5 mon_mom', 'XAUUSDc', 'M5'),
+    992107: ('XAU M15 ny_orb', 'XAUUSDc', 'M15'),
+    992108: ('XAU M15 d1_mom', 'XAUUSDc', 'M15'),
+    0:      ('manual/aux',     '', ''),
+}
+EXPECTED_TREES = 101  # 2026-08-31 canonical (was 231 Jul-28, 141 before)
+
+def trade_direction(t):
+    # account_snapshot history rows are closing deals (entry=1 == DEAL_ENTRY_OUT):
+    # a closed BUY position emits a SELL closing deal and vice versa.
+    raw = t.get('type', '?')
+    return {'SELL': 'BUY', 'BUY': 'SELL'}.get(raw, raw) if t.get('entry') == 1 else raw
+
+def magic_label(m):
+    try: m = int(m)
+    except Exception: return str(m)
+    return MAGIC_INFO.get(m, ('magic ' + str(m), '', ''))[0]
+
+def contract_size(sym):
+    base = sym.upper()
+    if base in CONTRACT_SIZES:
+        return CONTRACT_SIZES[base]
+    for k, v in CONTRACT_SIZES.items():
+        if base.startswith(k):
+            return v
+    return DEFAULT_CONTRACT
+
+def roi_on_margin(p, leverage):
+    \"\"\"Correct ROI-on-margin for a position. Falls back to raw pnl_pct if math impossible.\"\"\"
+    lots = p.get('lots', 0)
+    open_px = p.get('open_price', 0)
+    lev = leverage if leverage > 0 else 100
+    if lots <= 0 or open_px <= 0:
+        return None
+    margin = lots * contract_size(p.get('symbol', '')) * open_px / lev
+    if margin <= 0:
+        return None
+    net = p.get('profit', 0) + p.get('swap', 0) + p.get('commission', 0)
+    return net / margin * 100.0
 
 def fmt_money(v, sign=False):
     s = f'{v:+,.2f}' if sign else f'{v:,.2f}'
@@ -75,11 +132,40 @@ def section_header(out, icon, title, count=None):
     if count is not None:
         label += f' ({count})'
     pad = max(0, W - len(label) - 3)
-    dashes = SEP[0] * pad  # ponytail: reuse SEP char instead of escape hell
+    dashes = SEP[0] * pad
     out.append(f'{SEP} {label} {SEP}{dashes}')
 
 def section_end(out):
-    pass  # ponytail: section headers already have visual separators
+    pass
+
+def governor_line():
+    import subprocess, datetime as _dt, re as _re
+    try:
+        logf = '/config/.wine/drive_c/Program Files/MetaTrader 5/MQL5/logs/' + _dt.datetime.utcnow().strftime('%Y%m%d') + '.log'
+        p = subprocess.run(
+            ['docker', 'exec', 'mt5-terminal', 'sh', '-c',
+             'iconv -f UTF-16LE -t UTF-8 ' + chr(39) + logf + chr(39) + ' | grep -a BookGovernor | tail -1'],
+            capture_output=True, timeout=12)
+        line = p.stdout.decode('utf-8', 'replace').strip()
+        if p.returncode != 0 and not line:
+            return '   Governor: loaded? (no trace in today log; see /charts)'
+        if not line:
+            return '   Governor: no trace today (check chart 10 attach)'
+        m = _re.sub(r'^[A-Z]+\s+\d+\s+[0-9:.]+\s+BookGovernor [^ ]+\s+', '', line)
+        fm = _re.search(r'frozen=(\d+)', m)
+        pk = _re.search(r'peak=([\d.]+)', m)
+        gov_ev = m[m.index('[GOV]'):].strip() if '[GOV]' in m else ''
+        if fm:
+            st = 'FROZEN until next month' if fm.group(1) == '1' else 'active'
+            line = '   Governor: ' + st + ' (trail@35)'
+            if pk:
+                line += ' | peak ' + pk.group(1)
+            if gov_ev:
+                line += ' | last: ' + gov_ev[:90]
+            return line
+        return '   Governor: ' + m[:120]
+    except Exception as e:
+        return '   Governor: probe failed (' + str(e) + ')'
 
 # ── Account header ──
 def show_account(out):
@@ -92,28 +178,33 @@ def show_account(out):
     margin = s.get('margin', 0)
     free_margin = s.get('free_margin', 0)
     margin_level = s.get('margin_level', 0)
-    leverage = s.get('leverage', 0)
     ts = s.get('ts', '?')
-    peak = s.get('peak_equity', 0)
-    dd = s.get('drawdown_pct', 0)
+    peak = max(s.get('peak_equity', 0) or 0, balance, equity)
+    dd = max(0.0, (peak - equity) / peak * 100.0) if peak > 0 else 0.0
     margin_util = s.get('margin_utilization', 0)
 
     if margin_util == 0 and equity > 0:
         margin_util = margin / equity * 100.0
 
-    out.append(f'\U0001f4b0 {login} @ {server}')
-    out.append(f'   Balance {fmt_money(balance)} {currency} \u2502 Equity {fmt_money(equity)} \u2502 PnL {fmt_money(profit, True)}')
-    margin_status = '\u2705' if margin_level > 1000 else ('\u26a0\ufe0f' if margin_level > 200 else '\U0001f534')
-    out.append(f'   Margin {fmt_money(margin)} \u2502 Free {fmt_money(free_margin)} \u2502 Util {margin_util:.1f}% \u2502 Lvl {margin_level:.0f}% {margin_status}')
+    out.append(f'\\U0001f4b0 {login} @ {server}')
+    out.append(f'   Balance {fmt_money(balance)} {currency} \\u2502 Equity {fmt_money(equity)} \\u2502 PnL {fmt_money(profit, True)}')
+    if margin_level > 0:
+        margin_status = '\\u2705' if margin_level > 1000 else ('\\u26a0\\ufe0f' if margin_level > 200 else '\\U0001f534')
+        lvl_s = f'\\u2502 Lvl {margin_level:.0f}% {margin_status}'
+    else:
+        lvl_s = ''
+    out.append(f'   Margin {fmt_money(margin)} \\u2502 Free {fmt_money(free_margin)} \\u2502 Util {margin_util:.1f}% {lvl_s}'.rstrip(' \\u2502'))
     if peak > 0:
         dd_amt = peak - equity
-        out.append(f'   Peak {fmt_money(peak)} \u2502 DD {dd:.2f}% ({fmt_money(dd_amt)} from peak)')
+        out.append(f'   Peak {fmt_money(peak)} \\u2502 DD {dd:.2f}% ({fmt_money(dd_amt)} from peak)')
+    out.append(f'   Model {EXPECTED_TREES} trees (2026-08-31) \\u2502 8 streams + BookGovernor (T4 trail@35%)')
 
 
 def render_positions(out):
     positions = s.get('positions', [])
     summary = s.get('position_summary', {})
-    section_header(out, '\U0001f4ca', 'Open Positions', len(positions))
+    leverage = s.get('leverage', 0)
+    section_header(out, '\\U0001f4ca', 'Open Positions', len(positions))
 
     total_pnl = summary.get('total_pnl', 0)
     total_swap = summary.get('total_swap', 0)
@@ -126,7 +217,7 @@ def render_positions(out):
         total_comm = sum(p.get('commission', 0) for p in positions)
         total_net = total_pnl + total_swap + total_comm
 
-    out.append(f'   Total \u2502 PnL {fmt_money(total_pnl, True)} \u2502 Swap {fmt_money(total_swap, True)} \u2502 Comm {fmt_money(total_comm, True)} \u2502 Net {fmt_money(total_net, True)}')
+    out.append(f'   Total \\u2502 PnL {fmt_money(total_pnl, True)} \\u2502 Swap {fmt_money(total_swap, True)} \\u2502 Comm {fmt_money(total_comm, True)} \\u2502 Net {fmt_money(total_net, True)}')
     section_end(out)
 
     if not positions:
@@ -139,30 +230,54 @@ def render_positions(out):
         swap = p.get('swap', 0)
         comm = p.get('commission', 0)
         net = pnl + swap + comm
-        pnl_pct = p.get('pnl_pct', 0)
+        entry = p.get('open_price', 0)
+        cur = p.get('current_price', 0)
         sl = p.get('sl', 0)
         tp = p.get('tp', 0)
         risk = p.get('risk_pct', 0)
-        rr = p.get('rr_ratio', 0)
         hold = p.get('hold_bars', 0)
         open_time = p.get('open_time', '')
+
+        # ROI on margin computed locally (EA's pnl_pct field is unreliable — contract size bug)
+        roi = roi_on_margin(p, leverage)
+
+        # STRUCTURAL R:R — planned reward:risk at entry. NEVER use the EA's rr_ratio field:
+        # it computes |tp-current|/|current-sl| which explodes as price approaches the stop.
+        # The structural ratio is fixed for the life of the trade.
+        rr_struct = None
+        if entry > 0 and sl > 0 and tp > 0:
+            denom = abs(entry - sl)
+            if denom > 0:
+                rr_struct = abs(tp - entry) / denom
+        rr_s = f'1:{rr_struct:.1f}' if rr_struct else '\u2014'
+
+        # LIVE SL gap — distance from current price to stop. This one SHOULD move with price.
+        gap_s = '\u2014'
+        warn = ''
+        if cur > 0 and sl > 0:
+            gap = abs(cur - sl)
+            gap_s = f'{gap:.5f}'
+            entry_sl = abs(entry - sl) if entry > 0 else 0
+            if entry_sl > 0 and gap / entry_sl < 0.25:
+                warn = ' \u26a0\ufe0f NEAR SL'
+            elif pnl < 0 and entry_sl > 0 and gap < entry_sl * 0.5:
+                warn = ' \U0001f7e1 losing'
 
         sl_s = f'{sl:.5f}' if sl > 0 else '\u2014'
         tp_s = f'{tp:.5f}' if tp > 0 else '\u2014'
         risk_s = f'{risk:.1f}%' if risk > 0 else '\u2014'
-        rr_s = f'{rr:.1f}' if rr > 0 else '\u2014'
         hold_s = f'{hold}' if hold > 0 else '\u2014'
         since_s = open_time if open_time else '\u2014'
-        # ponytail: clamp absurd pnl_pct from EA computation bug
-        pnl_pct_s = f'{pnl_pct:+.1f}%' if abs(pnl_pct) < 10000 else ''
+        cur_s = f'{cur:.5f}' if cur > 0 else '\u2014'
 
-        out.append(f'   {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots @ {p[\"open_price\"]:.5f}')
+        out.append(f'   {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots @ {entry:.5f} \\u2192 now {cur_s}{warn}')
         pnl_line = f'     PnL {fmt_money(pnl, True)}'
-        if pnl_pct_s:
-            pnl_line += f' ({pnl_pct_s})'
+        if roi is not None and abs(roi) < 100000:
+            pnl_line += f' ({roi:+.1f}%)'
         pnl_line += f' \u2502 Net {fmt_money(net, True)} \u2502 SL {sl_s} \u2502 TP {tp_s}'
         out.append(pnl_line)
-        out.append(f'     Risk {risk_s} \u2502 R:R {rr_s} \u2502 Held {hold_s} bars \u2502 Since {since_s}')
+        out.append(f'     Risk {risk_s} \u2502 R:R {rr_s} (structural) \u2502 SL gap {gap_s} \u2502 Held {hold_s} bars')
+        out.append(f'     Since {since_s}')
         if i < len(positions) - 1:
             out.append('   \u00b7\u00b7\u00b7')
     section_end(out)
@@ -175,30 +290,77 @@ def render_history(out):
     losses = hist.get('losses', 0)
     wr = hist.get('win_rate', 0)
     hp = hist.get('total_pnl', 0)
-    hs = hist.get('total_swap', 0)
+    hs_ = hist.get('total_swap', 0)
     hc = hist.get('total_commission', 0)
     hn = hist.get('total_net', 0)
     avg_win = hist.get('avg_win', 0)
     avg_loss = hist.get('avg_loss', 0)
     pf = hist.get('profit_factor', 0)
 
-    section_header(out, '\U0001f4cb', 'Closed Trades', f'{count} trades, {wins}W/{losses}L, {wr:.0f}% WR')
+    history = s.get('history', [])
+    # Label the window so the numbers can't be misread against rolling stats
+    window = ''
+    if history:
+        oldest = history[-1].get('time', '')
+        if oldest:
+            window = f' since {oldest[:10]}'
+
+    section_header(out, '\\U0001f4cb', 'Closed Trades', f'{count} trades{window}, {wins}W/{losses}L, {wr:.0f}% WR')
 
     if count > 0:
-        out.append(f'   Net {fmt_money(hn, True)} \u2502 PnL {fmt_money(hp, True)} \u2502 Swap {fmt_money(hs, True)} \u2502 Comm {fmt_money(hc, True)}')
-        out.append(f'   Avg Win {fmt_money(avg_win, True)} \u2502 Avg Loss {fmt_money(avg_loss, True)} \u2502 PF {pf:.2f}')
+        out.append(f'   Net {fmt_money(hn, True)} \\u2502 PnL {fmt_money(hp, True)} \\u2502 Swap {fmt_money(hs_, True)} \\u2502 Comm {fmt_money(hc, True)}')
+        out.append(f'   Avg Win {fmt_money(avg_win, True)} \\u2502 Avg Loss {fmt_money(avg_loss, True)} \\u2502 PF {pf:.2f}')
     else:
         out.append('   No closed trades in history window')
 
-    history = s.get('history', [])
     if history:
-        show_n = min(10, len(history))
+        # Chronological integrity: sort explicitly by parsed close time, newest first.
+        # The EA iterates the deal pool by index; MT5 does NOT guarantee index order
+        # matches time order (batches/tickets can scramble it).
+        import datetime as _dt
+
+        def _parse_t(ts):
+            try:
+                return _dt.datetime.strptime(ts, '%Y.%m.%d %H:%M:%S')
+            except Exception:
+                return None
+
+        def _sort_key(t):
+            return _parse_t(t.get('time', '')) or _dt.datetime.min
+
+        history_sorted = sorted(history, key=_sort_key, reverse=True)  # newest first
+
+        show_n = min(15, len(history_sorted))
         section_end(out)
-        out.append(f'   Last {show_n}:')
-        for t in history[:show_n]:
+        out.append(f'   Recently closed (newest first, last {show_n}):')
+        for t in history_sorted[:show_n]:
             net = t.get('net', t.get('profit', 0))
-            out.append(f'     #{t.get(\"ticket\",\"?\")} {t.get(\"type\",\"?\")} {t.get(\"symbol\",\"?\")} {t.get(\"lots\",0)} lots \u2502 Net {fmt_money(net, True)} \u2502 {t.get(\"time\",\"?\")}')
+            sign = '+' if net >= 0 else ''
+            icon = '\\u2705' if net >= 0 else '\\u274c'
+            t_time = t.get('time', '?')
+            t_type = trade_direction(t)
+            t_sym = t.get('symbol', '?')
+            t_lots = t.get('lots', 0)
+            t_magic = magic_label(t.get('magic', '?'))
+            out.append(f'     {t_time} \\u2502 {icon} {sign}{net:.2f} \\u2502 {t_type} {t_sym} {t_lots} \\u2502 {t_magic}')
+        section_end(out)
+        # per-strategy aggregation over the whole history window
+        per = {}
+        for t in history:
+            lab = magic_label(t.get('magic', '?'))
+            d = per.setdefault(lab, {'n': 0, 'w': 0, 'net': 0.0, 'last': ''})
+            net = t.get('net', t.get('profit', 0))
+            d['n'] += 1; d['net'] += net
+            if net >= 0: d['w'] += 1
+            ti = t.get('time', '')
+            if ti > d['last']: d['last'] = ti
+        section_end(out)
+        out.append('   Per-strategy (inception window):')
+        for lab, d in sorted(per.items(), key=lambda kv: -kv[1]['net']):
+            n_ = d['n']; w_ = d['w']; net_ = fmt_money(d['net'], True); last_ = d['last'][:10]
+            out.append(f'     {lab:16s} {n_:3d} trades {w_:2d}W/{n_-w_:2d}L \\u2502 net {net_:>10s} \\u2502 last {last_}')
     section_end(out)
+
 
 
 def render_exposure(out):
@@ -236,7 +398,7 @@ def render_exposure(out):
         if magic not in mag_data:
             mag_data[magic] = {'lots': item.get('lots',0), 'pnl': item.get('pnl',0), 'count': item.get('count',0), 'swap': 0, 'comm': 0}
 
-    section_header(out, '\U0001f3af', 'Exposure', f'{len(positions)} positions')
+    section_header(out, '\\U0001f3af', 'Exposure', f'{len(positions)} positions')
 
     if not sym_data:
         out.append('   No open positions')
@@ -249,7 +411,7 @@ def render_exposure(out):
     total_comm = sum(x['comm'] for x in sym_data.values())
     total_net = total_pnl + total_swap + total_comm
 
-    out.append(f'   Total \u2502 {total_lots:.2f} lots \u2502 PnL {fmt_money(total_pnl, True)} \u2502 Net {fmt_money(total_net, True)}')
+    out.append(f'   Total \\u2502 {total_lots:.2f} lots \\u2502 PnL {fmt_money(total_pnl, True)} \\u2502 Net {fmt_money(total_net, True)}')
     section_end(out)
 
     out.append('   By Symbol:')
@@ -257,7 +419,7 @@ def render_exposure(out):
         pnl = d['pnl']
         net = pnl + d['swap'] + d['comm']
         pct = d['lots'] / total_lots * 100 if total_lots > 0 else 0
-        out.append(f'     {sym:12s} {d[\"lots\"]:5.2f} lots ({pct:4.1f}%) \u2502 PnL {fmt_money(pnl, True)} \u2502 Net {fmt_money(net, True)}')
+        out.append(f'     {sym:12s} {d[\"lots\"]:5.2f} lots ({pct:4.1f}%) \\u2502 PnL {fmt_money(pnl, True)} \\u2502 Net {fmt_money(net, True)}')
 
     if mag_data:
         section_end(out)
@@ -265,7 +427,7 @@ def render_exposure(out):
         for magic, d in sorted(mag_data.items(), key=lambda a: abs(a[1]['pnl']), reverse=True):
             pnl = d['pnl']
             net = pnl + d['swap'] + d['comm']
-            out.append(f'     {magic:>10s} \u2502 {d[\"lots\"]:5.2f} lots \u2502 PnL {fmt_money(pnl, True)} \u2502 Net {fmt_money(net, True)}')
+            out.append(f'     {magic:>10s} \\u2502 {d[\"lots\"]:5.2f} lots \\u2502 PnL {fmt_money(pnl, True)} \\u2502 Net {fmt_money(net, True)}')
 
     section_end(out)
     out.append('   Per-Position:')
@@ -275,32 +437,39 @@ def render_exposure(out):
         comm = p.get('commission', 0)
         net = pnl + swap + comm
         magic = p.get('magic', '?')
-        out.append(f'     #{p[\"ticket\"]} {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots \u2502 PnL {fmt_money(pnl, True)} \u2502 Net {fmt_money(net, True)} \u2502 {magic}')
+        out.append(f'     #{p[\"ticket\"]} {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots \\u2502 PnL {fmt_money(pnl, True)} \\u2502 Net {fmt_money(net, True)} \\u2502 {magic}')
     section_end(out)
+
+
+def compute_drawdown():
+    \"\"\"Drawdown with sane floor: peak >= balance & equity; clamped to >= 0.\"\"\"
+    balance = s.get('balance', 0)
+    equity = s.get('equity', 0)
+    peak = max(s.get('peak_equity', 0) or 0, balance, equity)
+    dd = max(0.0, (peak - equity) / peak * 100.0) if peak > 0 else 0.0
+    return balance, equity, peak, dd
 
 
 def render_drawdown(out):
-    balance = s.get('balance', 0)
-    equity = s.get('equity', 0)
-    peak = s.get('peak_equity', 0)
-    dd = s.get('drawdown_pct', 0)
+    balance, equity, peak, dd = compute_drawdown()
 
-    if peak == 0:
-        peak = balance
-        dd = (peak - equity) / peak * 100.0 if peak > 0 else 0.0
-
-    section_header(out, '\U0001f4c9', 'Drawdown')
+    section_header(out, '\\U0001f4c9', 'Drawdown')
     dd_amount = peak - equity
-    out.append(f'   Balance {fmt_money(balance)} \u2502 Equity {fmt_money(equity)} \u2502 Peak {fmt_money(peak)}')
-    out.append(f'   Drawdown {dd:.2f}% \u2502 {fmt_money(dd_amount)} from peak')
+    out.append(f'   Balance {fmt_money(balance)} \\u2502 Equity {fmt_money(equity)} \\u2502 Peak {fmt_money(peak)}')
+    out.append(f'   Drawdown {dd:.2f}% \\u2502 {fmt_money(dd_amount)} from peak')
 
-    bar_len = min(int(dd / 100 * 40), 40) if peak > 0 else 0
-    bar = '\u2588' * bar_len + '\u2591' * (40 - bar_len)
+    bar_len = min(int(dd / 100 * 40), 40)
+    bar = '\\u2588' * bar_len + '\\u2591' * (40 - bar_len)
     out.append(f'   [{bar}] {dd:.1f}%')
     section_end(out)
 
-    snapshots = s.get('equity_snapshots', [])
+    snapshots = list(s.get('equity_snapshots', []))
+    live_eq = s.get('equity', 0)
     if snapshots:
+        last = snapshots[-1]
+        # Append the live equity point when it differs from the last hourly snapshot
+        if abs(last.get('equity', 0) - live_eq) > 0.005:
+            snapshots.append({'time': f'{s.get(\"ts\", \"now\")} (live)', 'equity': live_eq})
         pt = 'points' if len(snapshots) != 1 else 'point'
         out.append(f'   Equity Curve ({len(snapshots)} {pt}):')
         min_eq = min(x['equity'] for x in snapshots)
@@ -308,11 +477,14 @@ def render_drawdown(out):
         rng = max_eq - min_eq if max_eq != min_eq else 1
         for x in snapshots:
             eq = x['equity']
-            bar_len = int((eq - min_eq) / rng * 20)
-            bar = '\u2588' * bar_len + '\u2591' * (20 - bar_len)
-            out.append(f'   {x[\"time\"]} \u2502 {bar} {eq:.2f}')
+            bar_len = int(round((eq - min_eq) / rng * 20))
+            bar_len = max(0, min(bar_len, 20))
+            bar = '\\u2588' * bar_len + '\\u2591' * (20 - bar_len)
+            out.append(f'   {x[\"time\"]} \\u2502 {bar} {eq:.2f}')
     else:
         out.append('   No equity snapshots yet (EA collects hourly)')
+        if live_eq > 0:
+            out.append(f'   Live equity: {live_eq:.2f}')
     section_end(out)
 
 
@@ -326,66 +498,80 @@ def render_risk(out):
     if margin_util == 0 and equity > 0:
         margin_util = margin / equity * 100.0
 
-    section_header(out, '\u26a0\ufe0f', 'Risk')
-    status = '\u2705 Healthy' if margin_level > 1000 else ('\u26a0\ufe0f Warning' if margin_level > 200 else ('\U0001f7e0 Danger' if margin_level > 100 else '\U0001f534 CRITICAL'))
-    out.append(f'   Equity {fmt_money(equity)} \u2502 Margin {fmt_money(margin)} \u2502 Free {fmt_money(free_margin)}')
-    out.append(f'   Utilization {margin_util:.1f}% \u2502 Level {margin_level:.0f}% \u2502 {status}')
+    section_header(out, '\\u26a0\\ufe0f', 'Risk')
+    if margin_level > 0:
+        status = '\\u2705 Healthy' if margin_level > 1000 else ('\\u26a0\\ufe0f Warning' if margin_level > 200 else ('\\U0001f7e0 Danger' if margin_level > 100 else '\\U0001f534 CRITICAL'))
+        lvl_s = f'\\u2502 Level {margin_level:.0f}% \\u2502 {status}'
+    else:
+        status = '\\U0001f534 CRITICAL' if margin > 0 else '\\u2705 No exposure'
+        lvl_s = f'\\u2502 Level n/a \\u2502 {status}'
+    out.append(f'   Equity {fmt_money(equity)} \\u2502 Margin {fmt_money(margin)} \\u2502 Free {fmt_money(free_margin)}')
+    out.append(f'   Utilization {margin_util:.1f}% {lvl_s}')
     section_end(out)
 
     positions = s.get('positions', [])
     if positions:
+        leverage = s.get('leverage', 0)
         out.append('   Per-Position Risk:')
         for i, p in enumerate(positions):
             risk = p.get('risk_pct', 0)
-            rr = p.get('rr_ratio', 0)
             sl = p.get('sl', 0)
             tp = p.get('tp', 0)
+            entry = p.get('open_price', 0)
             hold = p.get('hold_bars', 0)
             cur_px = p.get('current_price', 0)
 
-            sl_dist = p.get('sl_dist', 0)
-            tp_dist = p.get('tp_dist', 0)
-            if sl_dist == 0 and sl > 0 and cur_px > 0:
-                sl_dist = abs(cur_px - sl)
-            if tp_dist == 0 and tp > 0 and cur_px > 0:
-                tp_dist = abs(tp - cur_px)
-            if rr == 0 and tp_dist > 0 and sl_dist > 0:
-                rr = tp_dist / sl_dist
+            # Structural R:R from ENTRY prices (never the EA's dynamic rr_ratio)
+            rr_struct = None
+            if entry > 0 and sl > 0 and tp > 0:
+                denom = abs(entry - sl)
+                if denom > 0:
+                    rr_struct = abs(tp - entry) / denom
 
-            if risk == 0 and sl > 0 and cur_px > 0 and equity > 0:
-                sl_dist_val = abs(cur_px - sl)
-                risk = (sl_dist_val * p.get('lots', 0)) / equity * 100.0 if equity > 0 else 0
+            # Live SL gap
+            sl_gap = abs(cur_px - sl) if cur_px > 0 and sl > 0 else 0
 
-            sl_s = f'{sl_dist:.5f}' if sl > 0 else '\u2014'
-            tp_s = f'{tp_dist:.5f}' if tp > 0 else '\u2014'
+            # Fallback risk calc uses LIVE SL gap (money at risk right now),
+            # with contract size correction.
+            live_sl_dist = sl_gap or abs(entry - sl)
+            if risk == 0 and live_sl_dist > 0 and equity > 0:
+                risk_money = live_sl_dist * contract_size(p.get('symbol', '')) * p.get('lots', 0)
+                risk = risk_money / equity * 100.0
+
+            gap_s = f'{sl_gap:.5f}' if sl > 0 else '\u2014'
             risk_s = f'{risk:.2f}%' if risk > 0 else '\u2014'
-            rr_s = f'{rr:.1f}' if rr > 0 else '\u2014'
+            rr_s = f'1:{rr_struct:.1f}' if rr_struct else '\u2014'
             hold_s = f'{hold}' if hold > 0 else '\u2014'
+            cur_s = f'{cur_px:.5f}' if cur_px > 0 else '\u2014'
             pnl = p.get('profit', 0)
 
-            out.append(f'     {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots')
-            out.append(f'       Risk {risk_s} \u2502 R:R {rr_s} \u2502 SL {sl_s} \u2502 TP {tp_s} \u2502 Held {hold_s} bars')
+            warn = ''
+            if entry > 0 and sl > 0 and cur_px > 0:
+                entry_sl = abs(entry - sl)
+                if entry_sl > 0 and sl_gap / entry_sl < 0.25:
+                    warn = ' \u26a0\ufe0f NEAR SL'
+
+            out.append(f'     {p[\"type\"]} {p[\"symbol\"]} {p[\"lots\"]} lots \\u2502 now {cur_s}{warn}')
+            out.append(f'       Risk {risk_s} \\u2502 R:R {rr_s} (structural) \\u2502 SL gap {gap_s} \\u2502 Held {hold_s} bars')
             out.append(f'       PnL {fmt_money(pnl, True)}')
             if i < len(positions) - 1:
                 out.append('       \u00b7\u00b7\u00b7')
-    else:
-        out.append('   No open positions')
     section_end(out)
 
 
 def render_orders(out):
     orders = s.get('pending_orders', [])
-    section_header(out, '\U0001f4cb', 'Pending Orders', len(orders))
+    section_header(out, '\\U0001f4cb', 'Pending Orders', len(orders))
     if not orders:
         out.append('   None')
     else:
         for o in orders:
             sl = o.get('sl', 0)
             tp = o.get('tp', 0)
-            sl_s = f'{sl:.5f}' if sl > 0 else '\u2014'
-            tp_s = f'{tp:.5f}' if tp > 0 else '\u2014'
+            sl_s = f'{sl:.5f}' if sl > 0 else '\\u2014'
+            tp_s = f'{tp:.5f}' if tp > 0 else '\\u2014'
             out.append(f'   #{o[\"ticket\"]} {o[\"type\"]} {o[\"symbol\"]} {o[\"lots\"]} lots @ {o[\"price\"]:.5f}')
-            out.append(f'     SL {sl_s} \u2502 TP {tp_s} \u2502 {o.get(\"time\",\"?\")}')
+            out.append(f'     SL {sl_s} \\u2502 TP {tp_s} \\u2502 {o.get(\"time\",\"?\")}')
     section_end(out)
 
 
@@ -395,7 +581,7 @@ def render_equity(out):
 
 def render_rolling(out):
     rolling = s.get('rolling', {})
-    section_header(out, '\U0001f4c8', 'Rolling PnL')
+    section_header(out, '\\U0001f4c8', 'Rolling PnL')
 
     if not rolling:
         out.append('   No rolling data yet')
@@ -434,14 +620,59 @@ def render_rolling(out):
 
         trade_s = f'{trades} trade' + ('s' if trades != 1 else '')
         ROLL_INDENT = '                         '  # 25 spaces — aligns with main line │
-        out.append(f'   {label:8s} {fmt_money(pnl, True):>12s} \u2502 {trade_s} \u2502 {wl} \u2502 {wr:.0f}% WR')
+        out.append(f'   {label:8s} {fmt_money(pnl, True):>12s} \\u2502 {trade_s} \\u2502 {wl} \\u2502 {wr:.0f}% WR')
         if avg_s:
-            out.append(f'{ROLL_INDENT}\u2502 {avg_s}')
+            out.append(f'{ROLL_INDENT}\\u2502 {avg_s}')
+    section_end(out)
+
+
+
+def render_streams(out):
+    import datetime as _dt
+    now = _dt.datetime.utcnow()
+    w7 = now - _dt.timedelta(days=7)
+    w30 = now - _dt.timedelta(days=30)
+    history = s.get('history', [])
+    positions = s.get('positions', [])
+    open_magics = {}
+    for p in positions:
+        m = str(p.get('magic', '?'))
+        open_magics[m] = open_magics.get(m, 0) + 1
+    per = {}
+    def _pt(x):
+        try:
+            return _dt.datetime.strptime(x, '%Y.%m.%d %H:%M:%S')
+        except Exception:
+            return None
+    for t in history:
+        m = str(t.get('magic', '?'))
+        ts = _pt(t.get('time', ''))
+        net = t.get('net', t.get('profit', 0))
+        d = per.setdefault(m, {'n7': 0, 'p7': 0.0, 'n30': 0, 'p30': 0.0, 'last': ''})
+        if ts and ts >= w7:
+            d['n7'] += 1; d['p7'] += net
+        if ts and ts >= w30:
+            d['n30'] += 1; d['p30'] += net
+        if ts and ts.strftime('%m-%d') > d['last']:
+            d['last'] = ts.strftime('%m-%d')
+    section_header(out, '\u2699\ufe0f',
+                   'Streams (8 live + governor)')
+    for magic in sorted(k for k in MAGIC_INFO if k != 0):
+        label, sym, tf = MAGIC_INFO[magic]
+        m = str(magic)
+        d = per.get(m, {'n7': 0, 'p7': 0.0, 'n30': 0, 'p30': 0.0, 'last': ''})
+        st = 'open ' + str(open_magics[m]) if m in open_magics else 'idle'
+        n7 = d['n7']; p7 = fmt_money(d['p7'], True)
+        n30 = d['n30']; p30 = fmt_money(d['p30'], True)
+        last = d['last'] or '—'
+        out.append('   ' + f'{label:16s} {st:8s} last {last:5s} \\u2502 7d {n7:2d}t {p7:>9s} \\u2502 30d {n30:2d}t {p30:>9s}')
+    out.append(governor_line())
     section_end(out)
 
 
 # ── Render ──
 SECTION_RENDERERS = {
+    'streams': render_streams,
     'positions': render_positions,
     'history': render_history,
     'exposure': render_exposure,
@@ -456,7 +687,7 @@ out = []
 show_account(out)
 
 if SECTION == 'all':
-    for name in ['positions', 'history', 'exposure', 'drawdown', 'risk', 'orders', 'rolling']:
+    for name in ['streams', 'positions', 'history', 'exposure', 'drawdown', 'risk', 'orders', 'rolling']:
         SECTION_RENDERERS[name](out)
 elif SECTION in SECTION_RENDERERS:
     SECTION_RENDERERS[SECTION](out)
@@ -465,13 +696,19 @@ else:
     print('Sections: positions, history, exposure, drawdown, risk, orders, equity, rolling')
     sys.exit(1)
 
-print('\n'.join(out))
+print('\\n'.join(out))
+
 "
         ;;
 
     status)
         latest="${REPORT_DIR}/latest.json"
-        if [[ -f "$latest" ]]; then
+        # Report considered fresh only if modified in the last 24h.
+        fresh=false
+        if [[ -f "$latest" ]] && (( $(date +%s) - $(stat -c %Y "$latest") < 86400 )); then
+            fresh=true
+        fi
+        if [[ "$fresh" == true ]]; then
             python3 -c "
 import json, sys
 with open('$latest') as f:
@@ -482,10 +719,37 @@ ts = r.get('timestamp', '?')[:16]
 ch = r.get('charts', {})
 loaded = ch.get('loaded_count', ch.get('found_count', '?'))
 expected = ch.get('expected_count', '?')
-print(f'{icon} {sev} | charts {loaded}/{expected} | last check {ts}')
+print(f'{icon} {sev} | charts {loaded}/{expected} | last check {ts} [report]')
 "
         else
-            echo "\u26a0\ufe0f  No report yet \u2014 run: mt5ctl health"
+            # Stale/no report: query the live MCP health endpoint instead.
+            live_json="$(curl -sf --max-time 8 \
+                -H "Authorization: Bearer ${MT5_MCP_KEY:-+UKYKYDzHpwVYyCbhfpWKhdBfON6vh0qZma5qCRIRh}" \
+                http://127.0.0.1:22346/mcp/health 2>/dev/null || true)"
+            if [[ -n "$live_json" ]]; then
+                python3 -c "
+import json, sys
+r = json.loads(sys.argv[1])
+broker = r.get('broker', {})
+acct = r.get('account', {})
+proc = r.get('mt5_process', {})
+cont = r.get('container', {})
+ok = cont.get('alive') and proc.get('running') and broker.get('connected')
+sev = 'OK' if ok else ('CRITICAL' if not (cont.get('alive') and proc.get('running')) else 'WARNING')
+icon = {'OK':'\u2705', 'WARNING':'\u26a0\ufe0f', 'CRITICAL':'\U0001f534'}.get(sev, '?')
+pos = acct.get('position_count', '?')
+eq = acct.get('equity')
+eq_s = f'{eq:,.2f}' if isinstance(eq, (int, float)) else '?'
+age = acct.get('snapshot_age_minutes')
+snap_s = f' | snap {age}m old' if age is not None else ''
+via = broker.get('connected_via', '')
+trade_s = 'enabled' if broker.get('connected') else 'UNKNOWN'
+print(f'{icon} {sev} | equity {eq_s} USC | positions {pos} | trade {trade_s}{snap_s} | live [{via}]')
+" "$live_json"
+            else
+                echo "\u26a0\ufe0f  Report stale AND MCP endpoint unreachable \u2014 run: mt5ctl health"
+                exit 1
+            fi
         fi
         ;;
 
@@ -511,7 +775,7 @@ for mg, info in sorted(ch.get('charts', {}).items()):
     warmup = info.get('warmup_bars')
     warmup_str = f'warmup={warmup}' if warmup else '\u26a0\ufe0f NO warmup'
     trees = info.get('trees')
-    trees_ok = '\u2705' if trees == 141 else ('\U0001f534' if trees else '\u26a0\ufe0f')
+    trees_ok = '\u2705' if trees == 101 else ('\U0001f534' if trees else '\u26a0\ufe0f')
     trees_str = f'{trees} trees' if trees else 'no banner'
     print(f'  {trees_ok} magic={mg} {info.get(\"symbol\",\"?\")},{info.get(\"tf\",\"?\")} {info.get(\"atom\",\"?\")} ({trees_str}, {warmup_str})')
 aux = ch.get('auxiliary_eas', {})
