@@ -303,9 +303,10 @@ def render_positions(out):
 
 
 def _per_rows(per):
-    # Shared per-strategy row renderer. Returns list of lines, best net first.
+    # Shared per-strategy row renderer. Latest activity first (last desc,
+    # net desc tiebreak) — the most recent story reads first, always.
     lines = []
-    for lab, d in sorted(per.items(), key=lambda kv: -kv[1]['net']):
+    for lab, d in sorted(per.items(), key=lambda kv: (kv[1]['last'], kv[1]['net']), reverse=True):
         n_ = d['n']; w_ = d['w']; net_ = fmt_money(d['net'], True); last_ = d['last'][:10]
         lines.append(f'     {lab:22s} {n_:3d} trades {w_:2d}W/{n_-w_:2d}L \\u2502 net {net_:>10s} \\u2502 last {last_}')
     return lines
@@ -629,7 +630,7 @@ def render_orders(out):
     if not orders:
         out.append('   None')
     else:
-        for o in orders:
+        for o in sorted(orders, key=lambda o: o.get('time', ''), reverse=True):
             sl = o.get('sl', 0)
             tp = o.get('tp', 0)
             sl_s = f'{sl:.5f}' if sl > 0 else '\\u2014'
@@ -643,64 +644,66 @@ def render_equity(out):
     render_drawdown(out)
 
 
+def _wl_disp(w, l, trades):
+    # Compact W/L display shared by rolling headline + fold sub-lines.
+    if trades == 0:
+        return 'no trades'
+    if w == 0:
+        return f'{l}L'
+    if l == 0:
+        return f'{w}W'
+    return f'{w}W/{l}L'
+
 def render_rolling(out):
-    rolling = s.get('rolling', {})
-    section_header(out, '\\U0001f4c8', 'Rolling PnL')
-
-    if not rolling:
-        out.append('   No rolling data yet')
-        section_end(out)
-        return
-
-    for period, label, span in [('daily', 'Today', 1), ('weekly', 'Week', 7), ('monthly', 'Month', 30)]:
-        r = rolling.get(period, {})
-        pnl = r.get('pnl', 0)
-        trades = r.get('trades', 0)
-        w = r.get('wins', 0)
-        l = r.get('losses', 0)
-        wr = r.get('win_rate', 0)
-        avg_win = r.get('avg_win', 0)
-        avg_loss = r.get('avg_loss', 0)
-
-        # Build W/L display
-        if trades == 0:
-            wl = 'no trades'
-        elif w == 0:
-            wl = f'{l}L'
-        elif l == 0:
-            wl = f'{w}W'
+    # Window PnL computed from deal history (close time), split by deployment
+    # fold — headline == sum of folds, newest fold first. Windows: UTC day /
+    # trailing 7d / trailing 30d.
+    history = s.get('history', [])
+    now = _dt.datetime.utcnow()
+    parsed = [(t, _parse_ts(t.get('time', ''))) for t in history]
+    section_header(out, '\U0001f4c8', 'Rolling PnL')
+    ROLL_INDENT = '                         '  # 25 spaces — aligns with main line │
+    FOLD_ORDER = ('v16', 'legacy-p3-101', 'legacy-p2-231', 'legacy-p1-141')
+    for label, span in [('Today', 1), ('Week', 7), ('Month', 30)]:
+        if span == 1:
+            wtrades = [t for t, ts in parsed if ts and ts.date() == now.date()]
         else:
-            wl = f'{w}W/{l}L'
-
-        # Build avg display
+            cut = now - _dt.timedelta(days=span)
+            wtrades = [t for t, ts in parsed if ts and ts >= cut]
+        a = _agg(wtrades)
+        trades = a['n']; w = a['w']; l = a['l']
+        anet = a['net']; awr = a['wr']; aaw = a['aw']; aal = a['al']
+        wl = _wl_disp(w, l, trades)
         if trades > 0 and w > 0 and l > 0:
-            avg_s = f'avg {fmt_money(avg_win, True)} / {fmt_money(avg_loss)}'
+            avg_s = f'avg {fmt_money(aaw, True)} / {fmt_money(aal)}'
         elif trades > 0 and l > 0:
-            avg_s = f'avg loss {fmt_money(avg_loss)}'
+            avg_s = f'avg loss {fmt_money(aal)}'
         elif trades > 0 and w > 0:
-            avg_s = f'avg win {fmt_money(avg_win, True)}'
+            avg_s = f'avg win {fmt_money(aaw, True)}'
         else:
             avg_s = ''
-
         trade_s = f'{trades} trade' + ('s' if trades != 1 else '')
-        ROLL_INDENT = '                         '  # 25 spaces — aligns with main line │
-        out.append(f'   {label:8s} {fmt_money(pnl, True):>12s} \\u2502 {trade_s} \\u2502 {wl} \\u2502 {wr:.0f}% WR')
+        out.append(f'   {label:8s} {fmt_money(anet, True):>12s} \u2502 {trade_s} \u2502 {wl} \u2502 {awr:.0f}% WR')
         if avg_s:
-            out.append(f'{ROLL_INDENT}\\u2502 {avg_s}')
-        # Era honesty: flag windows that actually contain pre-swap trades.
-        # Self-expiring — the note vanishes once the swap leaves the window.
-        if span > 1:
-            cut = _dt.datetime.utcnow() - _dt.timedelta(days=span)
-            mixed = False
-            for t in s.get('history', []):
-                ts = _parse_ts(t.get('time', ''))
-                if ts and ts < SWAP_TS and ts >= cut:
-                    mixed = True
-                    break
-            if mixed:
-                out.append(f'{ROLL_INDENT}\\u2502 spans {SWAP_DAY} book swap (legacy+v16)')
+            out.append(f'{ROLL_INDENT}\u2502 {avg_s}')
+        by_era = {}
+        for t in wtrades:
+            e = era_of(t.get('time', ''), t.get('ticket'))
+            if e == 'unknown':
+                e = 'v16'
+            by_era.setdefault(e, []).append(t)
+        for e in FOLD_ORDER:
+            g = by_era.get(e)
+            if not g:
+                continue
+            ga = _agg(g)
+            gn = ga['n']
+            gnet = ga['net']
+            etag = ERA_META[e]['tag']
+            gwl = _wl_disp(ga['w'], ga['l'], gn)
+            gtrade_s = f'{gn} trade' + ('s' if gn != 1 else '')
+            out.append(f'{ROLL_INDENT}\u2502 {etag}: {fmt_money(gnet, True)} \u2502 {gtrade_s} \u2502 {gwl}')
     section_end(out)
-
 
 
 def render_streams(out):
@@ -746,7 +749,11 @@ def render_streams(out):
             d['last'] = ts.strftime('%m-%d')
     section_header(out, '\u2699\ufe0f',
                    f'Streams ({len(LIVE_STREAMS)} live + governor)')
-    for magic in sorted(LIVE_STREAMS):
+    # Latest-first: open streams float to the top, then most-recently-traded.
+    # Stable sort — idle/never-traded streams keep book order.
+    by_last = sorted(LIVE_STREAMS, key=lambda mg: per.get(str(mg), {}).get('last', ''), reverse=True)
+    ordered = sorted(by_last, key=lambda mg: 0 if str(mg) in open_magics else 1)
+    for magic in ordered:
         sdef = LIVE_STREAMS[magic]
         label, sym, tf = sdef['label'], sdef['symbol'], sdef['tf']
         m = str(magic)
@@ -784,14 +791,17 @@ SECTION_RENDERERS = {
 out = []
 show_account(out)
 
+# Reading order: current state first (positions → pending → exposure →
+# risk → drawdown), then recent performance (rolling by fold), then book
+# detail (streams) and the full audit trail (history) last.
 if SECTION == 'all':
-    for name in ['streams', 'positions', 'history', 'exposure', 'drawdown', 'risk', 'orders', 'rolling']:
+    for name in ['positions', 'orders', 'exposure', 'risk', 'drawdown', 'rolling', 'streams', 'history']:
         SECTION_RENDERERS[name](out)
 elif SECTION in SECTION_RENDERERS:
     SECTION_RENDERERS[SECTION](out)
 else:
     print(f'Unknown section: {SECTION}')
-    print('Sections: streams, positions, history, exposure, drawdown, risk, orders, equity, rolling')
+    print('Sections: positions, orders, exposure, risk, drawdown, rolling, streams, history, equity')
     sys.exit(1)
 
 print('\\n'.join(out))
