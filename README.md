@@ -32,7 +32,7 @@
 ```bash
 # Clone
 git clone https://github.com/ishan-parihar/metatrader-docker-deployment
-cd metatrader-docker-deployment
+cd metatrader-docker-deployment/MT5
 
 # Configure
 cp .env.example .env
