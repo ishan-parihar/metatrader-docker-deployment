@@ -144,4 +144,4 @@ TIMEZONE=UTC
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. The repo has no LICENSE file yet; see the upstream repo for the full text.
