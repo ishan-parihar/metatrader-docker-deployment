@@ -33,3 +33,4 @@ never_commit = []          # globs `genome close` leaves out of the named-path c
 
 [card]
 status_into = "docs/handoff/STATE.md"
+architecture = "ARCHITECTURE.md"
