@@ -1,17 +1,13 @@
 # MetaTrader Docker Deployment
 
-![Docker](https://img.shields.io/badge/Docker-24+-blue?logo=docker)
-![License](https://img.shields.io/badge/License-MIT-green)
-![Wine](https://img.shields.io/badge/Wine-9.0+-red?logo=winehq)
-![Cloudflare](https://img.shields.io/badge/Cloudflare_Tunnel-orange?logo=cloudflare)
-![noVNC](https://img.shields.io/badge/noVNC-1.4+-green)
+
+![Docker](https://img.shields.io/badge/Docker-24+-blue?logo=docker) ![License](https://img.shields.io/badge/License-MIT-green) ![Wine](https://img.shields.io/badge/Wine-9.0+-red?logo=winehq) ![Cloudflare](https://img.shields.io/badge/Cloudflare_Tunnel-orange?logo=cloudflare)
+![noVNC](https://img.shields.io/badge/noVNC-1.4+-green) **Deploy MT4/MT5 to cloud in one command** — noVNC remote access, Cloudflare tunnel auth, Wine-powered, production-ready.
+
+Every document in `docs/` is listed with the question it answers in [docs/PAGE-INDEX.md](docs/PAGE-INDEX.md).
 
 
-**Deploy MT4/MT5 to cloud in one command** — noVNC remote access, Cloudflare tunnel auth, Wine-powered, production-ready.
-
-![MT5 in browser](https://github.com/ishan-parihar/metatrader-docker-deployment/raw/main/assets/readme/mt5-novnc.png)
-
----
+![MT5 in browser](https://github.com/ishan-parihar/metatrader-docker-deployment/raw/main/assets/readme/mt5-novnc.png) ---
 
 ## What it is
 
@@ -31,8 +27,7 @@
 
 ```bash
 # Clone
-git clone https://github.com/ishan-parihar/metatrader-docker-deployment
-cd metatrader-docker-deployment/MT5
+git clone https://github.com/ishan-parihar/metatrader-docker-deployment cd metatrader-docker-deployment/MT5
 
 # Configure
 cp .env.example .env
@@ -64,13 +59,8 @@ docker compose up -d
 
 ```bash
 # .env
-CLOUDFLARE_TUNNEL_TOKEN=xxx
-VNC_PASSWORD=secure_password
-MT_VERSION=5                    # or 4
-MT_LOGIN=12345678               # optional: auto-login
-MT_PASSWORD=******              # optional
-MT_SERVER=MetaQuotes-Demo       # optional
-TIMEZONE=UTC
+CLOUDFLARE_TUNNEL_TOKEN=xxx VNC_PASSWORD=secure_password MT_VERSION=5                    # or 4 MT_LOGIN=12345678               # optional: auto-login
+MT_PASSWORD=******              # optional MT_SERVER=MetaQuotes-Demo       # optional TIMEZONE=UTC
 ```
 
 ---
@@ -102,45 +92,21 @@ TIMEZONE=UTC
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        Internet                                │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│              Cloudflare Tunnel (Zero Trust)                  │
-│         HTTPS + Auth (email/SSO/OTP)                         │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Docker Host                                │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │ Container: metatrader                                │    │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │    │
-│  │  │  Wine   │─▶│  MT5    │  │  Xvfb   │             │    │
-│  │  │  (Win10)│  │  terminal│  │  :99    │             │    │
-│  │  └─────────┘  └─────────┘  └────┬────┘             │    │
-│  │                                 │                   │    │
-│  │  ┌─────────┐  ┌─────────┐      │                   │    │
-│  │  │  x11vnc │──▶│  noVNC  │──────┘                   │    │
-│  │  │  :5900  │  │  :6080  │                          │    │
-│  │  └─────────┘  └─────────┘                          │    │
-│  └─────────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐ │                        Internet                                │ └─────────────────────────────────────────────────────────────┘ │
+                              ▼ ┌─────────────────────────────────────────────────────────────┐ │              Cloudflare Tunnel (Zero Trust)                  │ │         HTTPS + Auth (email/SSO/OTP)                         │
+└─────────────────────────────────────────────────────────────┘ │ ▼ ┌─────────────────────────────────────────────────────────────┐
+│                    Docker Host                                │ │  ┌─────────────────────────────────────────────────────┐    │ │  │ Container: metatrader                                │    │ │  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │    │
+│  │  │  Wine   │─▶│  MT5    │  │  Xvfb   │             │    │ │  │  │  (Win10)│  │  terminal│  │  :99    │             │    │ │  │  └─────────┘  └─────────┘  └────┬────┘             │    │ │  │                                 │                   │    │
+│  │  ┌─────────┐  ┌─────────┐      │                   │    │ │  │  │  x11vnc │──▶│  noVNC  │──────┘                   │    │ │  │  │  :5900  │  │  :6080  │                          │    │ │  │  └─────────┘  └─────────┘                          │    │
+│  └─────────────────────────────────────────────────────┘    │ └─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## Requirements
 
-- Docker 24+ / Docker Compose 2+
-- Cloudflare account (free tier works)
-- Domain (or use Cloudflare Pages subdomain)
-- 2 GB RAM minimum (4 GB recommended)
-- Linux host (x86_64)
-
----
+- Docker 24+ / Docker Compose 2+ - Cloudflare account (free tier works) - Domain (or use Cloudflare Pages subdomain) - 2 GB RAM minimum (4 GB recommended)
+- Linux host (x86_64) ---
 
 ## License
 
