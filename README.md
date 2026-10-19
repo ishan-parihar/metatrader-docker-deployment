@@ -27,7 +27,8 @@ Every document in `docs/` is listed with the question it answers in [docs/PAGE-I
 
 ```bash
 # Clone
-git clone https://github.com/ishan-parihar/metatrader-docker-deployment cd metatrader-docker-deployment/MT5
+git clone https://github.com/ishan-parihar/metatrader-docker-deployment
+cd metatrader-docker-deployment/MT5
 
 # Configure
 cp .env.example .env
@@ -59,8 +60,13 @@ docker compose up -d
 
 ```bash
 # .env
-CLOUDFLARE_TUNNEL_TOKEN=xxx VNC_PASSWORD=secure_password MT_VERSION=5                    # or 4 MT_LOGIN=12345678               # optional: auto-login
-MT_PASSWORD=******              # optional MT_SERVER=MetaQuotes-Demo       # optional TIMEZONE=UTC
+CLOUDFLARE_TUNNEL_TOKEN=xxx
+VNC_PASSWORD=secure_password
+MT_VERSION=5                    # or 4
+MT_LOGIN=12345678               # optional: auto-login
+MT_PASSWORD=******              # optional
+MT_SERVER=MetaQuotes-Demo       # optional
+TIMEZONE=UTC
 ```
 
 ---
@@ -92,13 +98,32 @@ MT_PASSWORD=******              # optional MT_SERVER=MetaQuotes-Demo       # opt
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐ │                        Internet                                │ └─────────────────────────────────────────────────────────────┘ │
-                              ▼ ┌─────────────────────────────────────────────────────────────┐ │              Cloudflare Tunnel (Zero Trust)                  │ │         HTTPS + Auth (email/SSO/OTP)                         │
-└─────────────────────────────────────────────────────────────┘ │ ▼ ┌─────────────────────────────────────────────────────────────┐
-│                    Docker Host                                │ │  ┌─────────────────────────────────────────────────────┐    │ │  │ Container: metatrader                                │    │ │  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │    │
-│  │  │  Wine   │─▶│  MT5    │  │  Xvfb   │             │    │ │  │  │  (Win10)│  │  terminal│  │  :99    │             │    │ │  │  └─────────┘  └─────────┘  └────┬────┘             │    │ │  │                                 │                   │    │
-│  │  ┌─────────┐  ┌─────────┐      │                   │    │ │  │  │  x11vnc │──▶│  noVNC  │──────┘                   │    │ │  │  │  :5900  │  │  :6080  │                          │    │ │  │  └─────────┘  └─────────┘                          │    │
-│  └─────────────────────────────────────────────────────┘    │ └─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                        Internet                                │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Cloudflare Tunnel (Zero Trust)                  │
+│         HTTPS + Auth (email/SSO/OTP)                         │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Docker Host                                │
+│  ┌─────────────────────────────────────────────────────┐    │
+│  │ Container: metatrader                                │    │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐             │    │
+│  │  │  Wine   │─▶│  MT5    │  │  Xvfb   │             │    │
+│  │  │  (Win10)│  │  terminal│  │  :99    │             │    │
+│  │  └─────────┘  └─────────┘  └────┬────┘             │    │
+│  │                                 │                   │    │
+│  │  ┌─────────┐  ┌─────────┐      │                   │    │
+│  │  │  x11vnc │──▶│  noVNC  │──────┘                   │    │
+│  │  │  :5900  │  │  :6080  │                          │    │
+│  │  └─────────┘  └─────────┘                          │    │
+│  └─────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
